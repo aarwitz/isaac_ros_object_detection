@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+# filepath: /home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/web_viewer_server_3d.py
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud2
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import String
 from cv_bridge import CvBridge
 
 import cv2
@@ -24,20 +27,24 @@ class Enhanced3DViewer(Node):
         self._latest_2d_frame = None
         self._latest_pointcloud = None
         self._latest_metadata = None
+        self._latest_grasp_poses = None
         self._last_2d_time = 0
         self._last_3d_time = 0
         self._last_meta_time = 0
+        self._last_grasp_time = 0
         self._lock = threading.Lock()
 
         # Counters for debugging
         self._2d_count = 0
         self._3d_count = 0
         self._meta_count = 0
+        self._grasp_count = 0
 
         # Subscribers with debugging
         self.create_subscription(Image, '/yolov8_processed_image', self.image_callback, 10)
         self.create_subscription(PointCloud2, '/detected_objects_pointcloud', self.pointcloud_callback, 10)
-        self.create_subscription(Image, '/detection_metadata', self.metadata_callback, 10)
+        self.create_subscription(String, '/detection_metadata', self.metadata_callback, 10)
+        self.create_subscription(PoseStamped, '/grasp_poses', self.grasp_callback, 10)
 
         # Create a timer to report status
         self.create_timer(5.0, self.report_status)
@@ -54,7 +61,9 @@ class Enhanced3DViewer(Node):
                 f"3D: {self._3d_count} msgs "
                 f"(last: {now - self._last_3d_time:.1f}s ago), "
                 f"Meta: {self._meta_count} msgs "
-                f"(last: {now - self._last_meta_time:.1f}s ago)"
+                f"(last: {now - self._last_meta_time:.1f}s ago), "
+                f"Grasp: {self._grasp_count} msgs "
+                f"(last: {now - self._last_grasp_time:.1f}s ago)"
             )
 
     def image_callback(self, msg):
@@ -89,14 +98,8 @@ class Enhanced3DViewer(Node):
     def metadata_callback(self, msg):
         try:
             self._meta_count += 1
-            # Convert array.array to bytes first, then decode
-            if hasattr(msg.data, 'tobytes'):
-                json_bytes = msg.data.tobytes()
-            else:
-                # Handle different array types
-                json_bytes = bytes(msg.data)
-            
-            json_str = json_bytes.decode('utf-8')
+            # msg.data is already a string when using std_msgs/String
+            json_str = msg.data
             with self._lock:
                 self._latest_metadata = json_str.encode('utf-8')
                 self._last_meta_time = time.time()
@@ -104,6 +107,35 @@ class Enhanced3DViewer(Node):
                 self.get_logger().info(f"📊 Received metadata #{self._meta_count}: {json_str[:100]}...")
         except Exception as e:
             self.get_logger().error(f"Failed to process metadata: {e}")
+            traceback.print_exc()
+
+    def grasp_callback(self, msg):
+        try:
+            self._grasp_count += 1
+            # Convert PoseStamped to JSON for web transmission
+            grasp_data = {
+                'position': {
+                    'x': float(msg.pose.position.x),
+                    'y': float(msg.pose.position.y),
+                    'z': float(msg.pose.position.z)
+                },
+                'orientation': {
+                    'x': float(msg.pose.orientation.x),
+                    'y': float(msg.pose.orientation.y),
+                    'z': float(msg.pose.orientation.z),
+                    'w': float(msg.pose.orientation.w)
+                },
+                'frame_id': msg.header.frame_id,
+                'timestamp': time.time()
+            }
+            with self._lock:
+                self._latest_grasp_poses = json.dumps(grasp_data).encode('utf-8')
+                self._last_grasp_time = time.time()
+            if self._grasp_count % 3 == 0:  # Log every 3rd grasp pose
+                pos = grasp_data['position']
+                self.get_logger().info(f"🤖 Received grasp pose #{self._grasp_count}: ({pos['x']:.3f}, {pos['y']:.3f}, {pos['z']:.3f})")
+        except Exception as e:
+            self.get_logger().error(f"Failed to process grasp pose: {e}")
             traceback.print_exc()
 
     def pointcloud2_to_json(self, pc_msg):
@@ -159,6 +191,17 @@ class Enhanced3DViewer(Node):
                     self.get_logger().warn(f"Failed to unpack point {i}: {e}")
                     continue
             
+            # Debug: Log color information
+            if len(colors) > 0:
+                colors_array = np.array(colors).reshape(-1, 3)
+                self.get_logger().info(
+                    f"🎨 WebSocket RGB Debug - Transmitting colors: "
+                    f"R({colors_array[:,0].min():.3f}-{colors_array[:,0].max():.3f}), "
+                    f"G({colors_array[:,1].min():.3f}-{colors_array[:,1].max():.3f}), "
+                    f"B({colors_array[:,2].min():.3f}-{colors_array[:,2].max():.3f}) "
+                    f"[{len(colors)//3} points]"
+                )
+            
             return {
                 'points': points,
                 'colors': colors,
@@ -178,6 +221,8 @@ class Enhanced3DViewer(Node):
                 return self._latest_pointcloud
             elif data_type == 'metadata':
                 return self._latest_metadata
+            elif data_type == 'grasp':
+                return self._latest_grasp_poses
         return None
 
     def has_data(self, data_type):
@@ -190,6 +235,8 @@ class Enhanced3DViewer(Node):
                 return self._latest_pointcloud is not None and (now - self._last_3d_time) < 10
             elif data_type == 'metadata':
                 return self._latest_metadata is not None and (now - self._last_meta_time) < 10
+            elif data_type == 'grasp':
+                return self._latest_grasp_poses is not None and (now - self._last_grasp_time) < 10
         return False
 
 node_ref = None
@@ -215,8 +262,10 @@ async def stream_handler(websocket, path=None):
             data_type = '3d'
         elif path == '/metadata':
             data_type = 'metadata'
+        elif path == '/grasp':
+            data_type = 'grasp'
         else:
-            await websocket.send("Invalid path. Use /2d, /3d, or /metadata")
+            await websocket.send("Invalid path. Use /2d, /3d, /metadata, or /grasp")
             return
 
         # Send initial status
@@ -259,6 +308,7 @@ async def main_ws_server():
     print("  ws://localhost:8765/2d - 2D detection images")
     print("  ws://localhost:8765/3d - 3D point cloud data")
     print("  ws://localhost:8765/metadata - Detection metadata")
+    print("  ws://localhost:8765/grasp - Grasp pose data")
     
     try:
         server = await websockets.serve(stream_handler, "0.0.0.0", 8765)
