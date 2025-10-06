@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Enhanced YOLOv8 3D Viewer - Fixed</title>
+  <title>Enhanced YOLOv8 3D Viewer - RGB Fixed</title>
   <style>
     body { 
       font-family: system-ui, -apple-system, sans-serif; 
@@ -136,7 +136,7 @@
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
-  <h2>Enhanced YOLOv8 3D Object Detection Viewer - Fixed</h2>
+  <h2>Enhanced YOLOv8 3D Object Detection Viewer - RGB Fixed</h2>
   
   <div class="tabs">
     <button class="tab active" data-tab="2d">2D Detection</button>
@@ -167,7 +167,9 @@
       <div><strong>3D Point Cloud Viewer</strong></div>
       <div id="point-count">Points: 0</div>
       <div id="detection-info">No detections</div>
+      <div id="grasp-info">No grasp poses</div>
       <div id="connection-status">🔴 Disconnected</div>
+      <div id="rgb-debug">RGB: Not available</div>
       <div style="margin-top: 8px; font-size: 10px; color: #888;">
         Mouse: Rotate | Wheel: Zoom | Right-click: Pan
       </div>
@@ -184,8 +186,16 @@
       <button id="connectMeta">Connect Metadata</button>
       <button id="disconnectMeta" disabled>Disconnect</button>
       <br>
+      <label>Grasp URL:</label>
+      <input id="hostGrasp" type="text" value="ws://100.110.118.74:8765/grasp" style="width:250px" />
+      <button id="connectGrasp">Connect Grasp</button>
+      <button id="disconnectGrasp" disabled>Disconnect</button>
+      <br>
       <button id="reset-view">Reset View</button>
+      <button id="test-grasp">Test Grasp Marker</button>
       <label><input type="checkbox" id="show-axes" checked> Show Axes</label>
+      <label><input type="checkbox" id="show-grasps" checked> Show Grasp Poses</label>
+      <label>Point Size: <input type="range" id="point-size" min="0.001" max="0.02" step="0.001" value="0.005"></label>
       <span>Updates: <span id="update-count">0</span></span>
     </div>
     
@@ -305,7 +315,9 @@
 
     // 3D Scene Setup
     let scene, camera, renderer, controls, pointCloud;
-    let axesHelper;
+    let axesHelper, graspMarkers = [];
+    let currentPointSize = 0.005;
+    let showGrasps = true;
 
     function init3DScene() {
       const container = document.getElementById('threejs-container');
@@ -321,6 +333,7 @@
       // Renderer
       renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.outputEncoding = THREE.sRGBEncoding;
       container.appendChild(renderer.domElement);
 
       // Controls
@@ -375,7 +388,7 @@
         debugLog(`Received point cloud data: ${pointData.length} bytes`);
         
         const data = JSON.parse(pointData);
-        debugLog(`Parsed ${data.num_points} points`);
+        debugLog(`Parsed ${data.num_points} points, has colors: ${data.colors && data.colors.length > 0}`);
         
         // Remove existing point cloud
         if (pointCloud) {
@@ -391,19 +404,27 @@
           const positions = new Float32Array(data.points);
           geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
           
-          // Set colors if available
-          if (data.colors && data.colors.length > 0) {
-            const colors = new Float32Array(data.colors);
-            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+          let hasValidColors = false;
+          
+          // Set colors if available and valid
+          if (data.colors && data.colors.length === data.points.length) { // both are 3*N
+            // If server sends floats 0..1, convert to 0..255 here:
+            const colSrc = data.colors;
+            const u8 = new Uint8Array(colSrc.length);
+            for (let i = 0; i < colSrc.length; i++) u8[i] = Math.max(0, Math.min(255, Math.round(colSrc[i] * 255)));
+            geometry.setAttribute('color', new THREE.BufferAttribute(u8, 3, true)); // normalized=true
+            hasValidColors = true;
+          } else {
+            document.getElementById('rgb-debug').textContent = 'RGB: No color data';
+            debugLog(`Color data issue: colors.length=${data.colors ? data.colors.length : 'none'}, points.length=${data.points.length}`);
           }
 
-          // Create point cloud material with adaptive size
-          const pointSize = Math.max(0.002, Math.min(0.01, 10.0 / data.num_points)); // Adaptive size based on point count
+          // Create point cloud material with fixed size and proper color handling
           const material = new THREE.PointsMaterial({
-            size: pointSize,
-            vertexColors: data.colors && data.colors.length > 0,
-            color: data.colors && data.colors.length > 0 ? undefined : 0x00ff00,
-            sizeAttenuation: true  // Points get smaller with distance
+            size: currentPointSize,
+            vertexColors: hasValidColors,
+            sizeAttenuation: false,
+            color: hasValidColors ? undefined : 0x00ff00
           });
 
           pointCloud = new THREE.Points(geometry, material);
@@ -416,7 +437,7 @@
           updateCounter++;
           document.getElementById('update-count').textContent = updateCounter;
           
-          debugLog(`Point cloud updated with ${data.num_points} points (size: ${pointSize.toFixed(4)})`);
+          debugLog(`Point cloud updated: ${data.num_points} points, RGB: ${hasValidColors}, size: ${currentPointSize.toFixed(4)}`);
         } else {
           document.getElementById('point-count').textContent = 'Points: 0';
           debugLog('No points in received data');
@@ -424,6 +445,94 @@
       } catch (e) {
         debugLog(`Point cloud update error: ${e.message}`);
         console.error('Failed to update point cloud', e);
+      }
+    }
+
+    // Grasp pose visualization
+    function clearGraspMarkers() {
+      graspMarkers.forEach(marker => {
+        scene.remove(marker);
+        if (marker.geometry) marker.geometry.dispose();
+        if (marker.material) marker.material.dispose();
+      });
+      graspMarkers = [];
+    }
+
+    function createGraspMarker(position, orientation) {
+      // position = {x,y,z} from ROS camera frame
+      // convert to three.js coordinate convention: flip Y
+      const px = position.x;
+      const py = -position.y; // flip sign
+      const pz = position.z;
+
+      // sphere size tuned for visibility; scale by depth so farther grasps remain visible
+      const baseRadius = 0.02;
+      const radius = Math.max(0.01, baseRadius * (1 + pz)); // simple scaling with depth
+
+      const group = new THREE.Group();
+
+      const sphereGeometry = new THREE.SphereGeometry(radius, 12, 8);
+      const sphereMaterial = new THREE.MeshLambertMaterial({ color: 0xff4444, emissive: 0x440000 });
+      const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+      group.add(sphere);
+
+      // draw local axes as arrow helpers (scale arrows to depth)
+      const arrowLength = Math.max(0.05, 0.12 * (1 + pz));
+      const arrowX = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(0,0,0), arrowLength, 0xff0000);
+      const arrowY = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,0), arrowLength, 0x00ff00);
+      const arrowZ = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,0), arrowLength, 0x0000ff);
+      group.add(arrowX);
+      group.add(arrowY);
+      group.add(arrowZ);
+
+      // Set position using transformed coords
+      group.position.set(px, py, pz);
+
+      // apply quaternion orientation (assuming the quaternion is in ROS camera frame)
+      const q = new THREE.Quaternion(
+        orientation.x,
+        orientation.y,
+        orientation.z,
+        orientation.w
+      );
+
+      // Note: If orientation looks rotated incorrectly, you may need an extra rotation
+      // to convert between camera coordinate conventions (we can add that later).
+      group.setRotationFromQuaternion(q);
+
+      return group;
+    }
+
+    function updateGraspPose(graspData) {
+      try {
+        debugLog('Received grasp payload length: ' + graspData.length);
+        const data = JSON.parse(graspData);
+
+        // Clear previous markers
+        clearGraspMarkers();
+
+        if (!data.position) {
+          document.getElementById('grasp-info').textContent = 'No position in grasp data';
+          return;
+        }
+
+        // Add marker if enabled
+        if (showGrasps) {
+          const marker = createGraspMarker(data.position, data.orientation || {x:0,y:0,z:0,w:1});
+          graspMarkers.push(marker);
+          scene.add(marker);
+
+          // Update info panel
+          document.getElementById('grasp-info').textContent =
+            `Grasp: (${data.position.x.toFixed(3)}, ${data.position.y.toFixed(3)}, ${data.position.z.toFixed(3)})`;
+
+          debugLog(`Grasp marker added at (${data.position.x.toFixed(3)}, ${data.position.y.toFixed(3)}, ${data.position.z.toFixed(3)})`);
+        } else {
+          document.getElementById('grasp-info').textContent = 'Grasp poses hidden';
+        }
+      } catch (e) {
+        debugLog('Grasp pose update error: ' + e.message);
+        console.error('Failed to update grasp pose', e);
       }
     }
 
@@ -442,7 +551,7 @@
             `<strong>${detection.class_name}</strong><br>` +
             `Conf: ${(detection.confidence * 100).toFixed(1)}%<br>` +
             `3D: (${detection.position_3d.map(v => v.toFixed(3)).join(', ')})m<br>` +
-            `Depth: ${detection.depth_mm}mm<br>` +
+            `Depth: ${detection.depth_m.toFixed(3)}m<br>` +
             `Points: ${detection.num_points}`;
           
           debugLog(`Detection: ${detection.class_name} at ${detection.position_3d.map(v => v.toFixed(3)).join(',')}`);
@@ -458,15 +567,22 @@
     // 3D WebSocket connections
     let ws3d = null;
     let wsMeta = null;
+    let wsGrasp = null;
     const status3d = document.getElementById('status3d');
     const host3dInput = document.getElementById('host3d');
     const hostMetaInput = document.getElementById('hostMeta');
+    const hostGraspInput = document.getElementById('hostGrasp');
     const connect3dBtn = document.getElementById('connect3d');
     const disconnect3dBtn = document.getElementById('disconnect3d');
     const connectMetaBtn = document.getElementById('connectMeta');
     const disconnectMetaBtn = document.getElementById('disconnectMeta');
+    const connectGraspBtn = document.getElementById('connectGrasp');
+    const disconnectGraspBtn = document.getElementById('disconnectGrasp');
     const resetViewBtn = document.getElementById('reset-view');
+    const testGraspBtn = document.getElementById('test-grasp');
     const showAxesCheckbox = document.getElementById('show-axes');
+    const showGraspsCheckbox = document.getElementById('show-grasps');
+    const pointSizeSlider = document.getElementById('point-size');
 
     function connect3D(url) {
       if (ws3d) ws3d.close();
@@ -540,6 +656,73 @@
       };
     }
 
+    function connectGrasp(url) {
+      if (wsGrasp) wsGrasp.close();
+      debugLog(`Connecting to grasp stream: ${url}`);
+      wsGrasp = new WebSocket(url);
+      wsGrasp.binaryType = 'arraybuffer';
+
+      wsGrasp.onopen = () => {
+        connectGraspBtn.disabled = true;
+        disconnectGraspBtn.disabled = false;
+        debugLog('Grasp WebSocket connected');
+      };
+
+      wsGrasp.onmessage = (evt) => {
+        try {
+          let payloadStr = null;
+
+          if (typeof evt.data === 'string') {
+            payloadStr = evt.data;
+          } else if (evt.data instanceof ArrayBuffer) {
+            payloadStr = new TextDecoder().decode(evt.data);
+          } else if (evt.data instanceof Blob) {
+            // handle Blob (text) asynchronously
+            const reader = new FileReader();
+            reader.onload = () => {
+              try {
+                updateGraspPose(reader.result);
+              } catch (err) {
+                debugLog('Grasp parse error (blob): ' + err.message);
+              }
+            };
+            reader.readAsText(evt.data);
+            return;
+          } else {
+            debugLog('Unrecognized grasp payload type: ' + typeof evt.data);
+            return;
+          }
+
+          if (!payloadStr || payloadStr.length === 0) {
+            // ignore empty keepalives
+            return;
+          }
+
+          // optional: ignore server keepalives like {"status":"idle"}
+          if (payloadStr.startsWith('{"status"')) {
+            debugLog('Grasp status: ' + payloadStr);
+            return;
+          }
+
+          updateGraspPose(payloadStr);
+
+        } catch (e) {
+          debugLog('Grasp onmessage error: ' + e.message);
+          console.error('Grasp onmessage error', e);
+        }
+      };
+
+      wsGrasp.onclose = (e) => {
+        connectGraspBtn.disabled = false;
+        disconnectGraspBtn.disabled = true;
+        debugLog(`Grasp WebSocket closed: ${e.code}`);
+      };
+
+      wsGrasp.onerror = (err) => {
+        debugLog(`Grasp WebSocket error: ${err}`);
+      };
+    }
+
     // Event listeners
     connect2dBtn.onclick = () => connect2D(host2dInput.value);
     disconnect2dBtn.onclick = () => {
@@ -565,6 +748,14 @@
       }
     };
 
+    connectGraspBtn.onclick = () => connectGrasp(hostGraspInput.value);
+    disconnectGraspBtn.onclick = () => {
+      if (wsGrasp) {
+        wsGrasp.close();
+        wsGrasp = null;
+      }
+    };
+
     resetViewBtn.onclick = () => {
       if (camera && controls) {
         camera.position.set(0.5, 0.5, 1);
@@ -574,6 +765,18 @@
       }
     };
 
+    testGraspBtn.onclick = () => {
+      // Create a test grasp marker using the received coordinates
+      const testGraspData = JSON.stringify({
+        "position": {"x": 0.04757516837441205, "y": -0.05999124566294538, "z": 0.453},
+        "orientation": {"x": 0.0, "y": 0.0, "z": -0.06461850484432438, "w": 0.9979100404503825},
+        "frame_id": "camera_color_optical_frame",
+        "timestamp": Date.now() / 1000
+      });
+      updateGraspPose(testGraspData);
+      debugLog('Test grasp marker created at known coordinates');
+    };
+
     showAxesCheckbox.onchange = () => {
       if (axesHelper) {
         axesHelper.visible = showAxesCheckbox.checked;
@@ -581,10 +784,31 @@
       }
     };
 
+    showGraspsCheckbox.onchange = () => {
+      showGrasps = showGraspsCheckbox.checked;
+      if (!showGrasps) {
+        clearGraspMarkers();
+        document.getElementById('grasp-info').textContent = 'Grasp poses hidden';
+      }
+      debugLog(`Grasp poses ${showGrasps ? 'shown' : 'hidden'}`);
+    };
+
+    pointSizeSlider.oninput = () => {
+      currentPointSize = parseFloat(pointSizeSlider.value);
+      if (pointCloud && pointCloud.material) {
+        pointCloud.material.size = currentPointSize;
+        pointCloud.material.needsUpdate = true;
+        debugLog(`Point size updated to ${currentPointSize.toFixed(4)}`);
+      }
+    };
+
     // Auto-connect on load
     window.addEventListener('load', () => {
       connect2D(host2dInput.value);
       debugLog('Page loaded, auto-connecting 2D');
+      // Auto-connect grasp for testing
+      connectGrasp(hostGraspInput.value);
+      debugLog('Auto-connecting Grasp stream');
     });
   </script>
 </body>
