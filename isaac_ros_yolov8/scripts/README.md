@@ -1,11 +1,4 @@
-# CleaningRobot
-
-This repository contains scripts and notes for the main hardware pieces of my robot:
-- Intel RealSense in Isaac Ros environment
-- Waveshare RoArm M2-S 4 axis arm
-- HiWonder 4 wheel motor driver
-
-Below are clean, copy-paste friendly commands and examples. All commands use plain ASCII quotes and are given as single lines so you can run them one at a time in a terminal.
+# CleaningRobot vision system
 
 ## Isaac ROS / development helper commands for setting up vision system
 
@@ -89,3 +82,7 @@ python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8
 ```
 
 And then on a client (I am just using my mac laptop) open up viewer.html
+
+
+# Finetuning yolov8
+
