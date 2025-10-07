@@ -23,14 +23,9 @@ def combine_core_scripts():
             'path': '/home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/web_viewer_server_3d.py'
         },
         {
-            'name': 'enhanced_viewer_fixed.html',
+            'name': 'viewer.html',
             'description': 'Web interface', 
-            'path': '/home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/enhanced_viewer_fixed.html'
-        },
-        {
-            'name': 'ggcnn_robot_controller.py',
-            'description': 'Robot control',
-            'path': '/home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/ggcnn_robot_controller.py'
+            'path': '/home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/viewer.html'
         }
     ]
     
