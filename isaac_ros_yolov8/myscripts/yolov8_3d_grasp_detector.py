@@ -359,9 +359,9 @@ class ObjectDetection3DGrasp(Node):
                     confidence = detection.results[0].hypothesis.score
                     class_name = self.coco_classes[class_id] if class_id < len(self.coco_classes) else f"class_{class_id}"
                     # Add confidence filter here just in case
-                    if confidence < 0.9:  # Skip low confidence detections
-                        self.get_logger().debug(f'⏭️ Skipping {class_name} with confidence {confidence:.3f} < 0.9')
-                        continue
+                    # if confidence < 0.9:  # Skip low confidence detections
+                    #     self.get_logger().debug(f'⏭️ Skipping {class_name} with confidence {confidence:.3f} < 0.9')
+                    #     continue
                 else:
                     class_name = "unknown"
                     confidence = 0.0
