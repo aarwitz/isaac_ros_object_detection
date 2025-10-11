@@ -56,36 +56,24 @@ sudo apt-get install -y ros-humble-isaac-ros-examples ros-humble-isaac-ros-reals
 pip install websockets
 ```
 
-Useful for debugging model
-```bash
-pip install onnxsim
-```
-
-Might need to regenerate the engine .plan
-```bash
-trtexec \
-  --onnx=/workspaces/isaac_ros-dev/isaac_ros_assets/models/yolov8/socks.onnx \
-  --saveEngine=/workspaces/isaac_ros-dev/isaac_ros_assets/models/yolov8/socks.plan \
-  --memPoolSize=workspace:2048
-  --verbose
-```
-
 Run the launch file for yolov8 pretrained
 ```bash
 ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono_rect_depth,yolov8 model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/yolov8s.onnx engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/yolov8s.plan
+```
+
+To run finetuned models, make sure to source modified decoder build (after sourcing humble)
+Make sure to source both in both yolov8 launch and yolov8 visualizer!
+```bash
+source /opt/ros/humble/setup.bash
+```
+```bash
+source /workspaces/isaac_ros-dev/install/setup.bash
 ```
 
 My model for dirt on wood floor
 ```bash
 ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono_rect_depth,yolov8    model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/fixed.onnx engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/fixed.plan
 ```
-
-My model for socks on white carpter
-```bash
-ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono_rect_depth,yolov8 model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.onnx engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.plan
-```
-
-You can also set confidence score param like:
 
 My model for socks on white carpter
 ```bash
@@ -176,3 +164,17 @@ source /workspaces/isaac_ros-dev/install/setup.bash
 # Your overlay should appear BEFORE /opt/ros/humble
 echo $AMENT_PREFIX_PATH
 # This must print your overlay path, not /opt/ros/humble
+
+Useful for debugging model
+```bash
+pip install onnxsim
+```
+
+Might need to regenerate the engine .plan
+```bash
+trtexec \
+  --onnx=/workspaces/isaac_ros-dev/isaac_ros_assets/models/yolov8/socks.onnx \
+  --saveEngine=/workspaces/isaac_ros-dev/isaac_ros_assets/models/yolov8/socks.plan \
+  --memPoolSize=workspace:2048
+  --verbose
+```
