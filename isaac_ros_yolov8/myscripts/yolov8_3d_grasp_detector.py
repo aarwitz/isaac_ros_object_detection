@@ -229,36 +229,64 @@ class ObjectDetection3DGrasp(Node):
         world_z = depth_m
         return world_x, world_y, world_z
     
-    def create_object_pointcloud(self, depth_image, color_image, bbox_x, bbox_y, bbox_w, bbox_h, fx, fy, cx, cy, margin=15):
-        """Create a cropped point cloud for the detected object"""
-        x1 = max(0, int(bbox_x - bbox_w/2) - margin)
-        y1 = max(0, int(bbox_y - bbox_h/2) - margin)
-        x2 = min(depth_image.shape[1], int(bbox_x + bbox_w/2) + margin)
-        y2 = min(depth_image.shape[0], int(bbox_y + bbox_h/2) + margin)
-        
-        depth_crop = depth_image[y1:y2, x1:x2]
+    def create_object_pointcloud(self, depth_image, color_image,
+                             bbox_cx, bbox_cy, bbox_w, bbox_h,
+                             fx, fy, cx, cy, margin=15):
+        # 1) Rect crop
+        x1 = max(0, int(bbox_cx - bbox_w/2) - margin)
+        y1 = max(0, int(bbox_cy - bbox_h/2) - margin)
+        x2 = min(depth_image.shape[1], int(bbox_cx + bbox_w/2) + margin)
+        y2 = min(depth_image.shape[0], int(bbox_cy + bbox_h/2) + margin)
+
+        depth_crop = depth_image[y1:y2, x1:x2].astype(np.float32)  # mm
         color_crop = color_image[y1:y2, x1:x2]
-        
-        points = []
-        colors = []
-        
-        for v in range(depth_crop.shape[0]):
-            for u in range(depth_crop.shape[1]):
-                depth_mm = depth_crop[v, u]
-                if depth_mm > 100 and depth_mm < 5000:
-                    depth_m = depth_mm / 1000.0
-                    pixel_x = x1 + u
-                    pixel_y = y1 + v
-                    world_x, world_y, world_z = self.pixel_to_world(pixel_x, pixel_y, depth_m, fx, fy, cx, cy)
-                    points.append([world_x, world_y, world_z])
-                    
-                    if v < color_crop.shape[0] and u < color_crop.shape[1]:
-                        b, g, r = color_crop[v, u]
-                        colors.append([r, g, b])
-                    else:
-                        colors.append([255, 0, 0])
-        
-        return np.array(points), np.array(colors), depth_crop, x1, y1
+
+        if depth_crop.size == 0:
+            return np.empty((0,3)), np.empty((0,3)), depth_crop, x1, y1
+
+        # 2) Robust object depth (use central 40% window to avoid edges)
+        H, W = depth_crop.shape
+        cx0 = int(0.3 * W); cx1 = int(0.7 * W)
+        cy0 = int(0.3 * H); cy1 = int(0.7 * H)
+        center_patch = depth_crop[cy0:cy1, cx0:cx1]
+
+        valid = center_patch[(center_patch > 100.0) & (center_patch < 5000.0)]
+        if valid.size == 0:
+            return np.empty((0,3)), np.empty((0,3)), depth_crop, x1, y1
+
+        z_med_mm = float(np.median(valid))
+        # MAD-based scale (robust). Fallback bandwidth if too thin.
+        mad = np.median(np.abs(valid - z_med_mm)) if valid.size > 5 else 0.0
+        band_mm = max(30.0, 2.5 * 1.4826 * mad)  # >=3 cm, expand with MAD
+
+        # 3) Depth inlier mask
+        z = depth_crop
+        mask = (z > 100.0) & (z < 5000.0) & (np.abs(z - z_med_mm) <= band_mm)
+
+        # Optional light morphology to fill small holes
+        mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))).astype(bool)
+
+        # 4) Generate XYZ + RGB only for inliers
+        v_idx, u_idx = np.nonzero(mask)
+        if v_idx.size == 0:
+            return np.empty((0,3)), np.empty((0,3)), depth_crop, x1, y1
+
+        depth_m = z[v_idx, u_idx] / 1000.0
+        pixel_x = x1 + u_idx
+        pixel_y = y1 + v_idx
+
+        X = (pixel_x - cx) * depth_m / fx
+        Y = (pixel_y - cy) * depth_m / fy
+        Z = depth_m
+
+        points = np.stack([X, Y, Z], axis=1)
+
+        rgb = color_crop[v_idx, u_idx]  # BGR
+        colors = np.stack([rgb[:,2], rgb[:,1], rgb[:,0]], axis=1)  # to RGB
+
+        return points, colors, depth_crop, x1, y1
+
 
     def create_pointcloud2_msg(self, points, colors, header):
         """Create a PointCloud2 message with XYZ and RGB data"""
