@@ -412,6 +412,14 @@
             const colSrc = data.colors;
             const u8 = new Uint8Array(colSrc.length);
             for (let i = 0; i < colSrc.length; i++) u8[i] = Math.max(0, Math.min(255, Math.round(colSrc[i] * 255)));
+            
+            // Convert from sRGB to linear color space for vertex colors (since renderer uses sRGB encoding)
+            for (let i = 0; i < u8.length; i++) {
+              const srgb = u8[i] / 255;
+              const linear = srgb <= 0.04045 ? srgb / 12.92 : Math.pow((srgb + 0.055)/1.055, 2.4);
+              u8[i] = Math.round(linear * 255);
+            }
+            
             geometry.setAttribute('color', new THREE.BufferAttribute(u8, 3, true)); // normalized=true
             hasValidColors = true;
           } else {

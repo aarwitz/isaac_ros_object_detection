@@ -289,36 +289,42 @@ class ObjectDetection3DGrasp(Node):
 
 
     def create_pointcloud2_msg(self, points, colors, header):
-        """Create a PointCloud2 message with XYZ and RGB data"""
         if len(points) == 0:
             return None
-            
+
+        # Ensure shapes and types
+        pts = points.astype(np.float32)
+        cols = colors.astype(np.uint8)  # RGB in 0..255
+
         fields = [
-            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name='rgb', offset=12, datatype=PointField.UINT32, count=1),
+            PointField(name='x', offset=0,  datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4,  datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8,  datatype=PointField.FLOAT32, count=1),
+            PointField(name='r', offset=12, datatype=PointField.UINT8,   count=1),
+            PointField(name='g', offset=13, datatype=PointField.UINT8,   count=1),
+            PointField(name='b', offset=14, datatype=PointField.UINT8,   count=1),
         ]
-        
-        point_data = []
-        for i in range(len(points)):
-            x, y, z = points[i]
-            r, g, b = colors[i].astype(np.uint8)
-            rgb = (r << 16) | (g << 8) | b
-            point_data.append(struct.pack('fffI', x, y, z, rgb))
-        
+
+        # stride = 3*4 (xyz) + 3*1 (rgb) + 1 padding = 16 bytes
+        point_step = 16
+        row = bytearray()
+        pad = b'\x00'  # 1-byte pad to keep 16B stride
+
+        for (x, y, z), (r, g, b) in zip(pts, cols):
+            row += struct.pack('<fff', x, y, z) + bytes((int(r), int(g), int(b))) + pad
+
         pc2_msg = PointCloud2()
         pc2_msg.header = header
         pc2_msg.height = 1
-        pc2_msg.width = len(points)
+        pc2_msg.width = len(pts)
         pc2_msg.fields = fields
         pc2_msg.is_bigendian = False
-        pc2_msg.point_step = 16
-        pc2_msg.row_step = pc2_msg.point_step * len(points)
-        pc2_msg.data = b''.join(point_data)
+        pc2_msg.point_step = point_step
+        pc2_msg.row_step = point_step * len(pts)
+        pc2_msg.data = bytes(row)
         pc2_msg.is_dense = True
-        
         return pc2_msg
+
 
     def process_detections(self, detection_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
         """Process synchronized detection, depth, and color data with grasp pose generation"""
