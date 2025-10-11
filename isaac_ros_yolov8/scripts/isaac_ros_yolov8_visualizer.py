@@ -30,7 +30,7 @@ from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray
 
 names = {
-        0: 'clean',
+        0: 'sock',
 }
 
 

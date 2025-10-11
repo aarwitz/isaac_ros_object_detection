@@ -118,7 +118,7 @@ class ObjectDetection3DGrasp(Node):
         
         # COCO class names
         self.coco_classes = [
-            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+            'sock','person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
             'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
             'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack',
             'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
@@ -133,9 +133,7 @@ class ObjectDetection3DGrasp(Node):
         
         # Graspable object classes (can be customized)
         self.graspable_classes = {
-            'bottle', 'cup', 'bowl', 'banana', 'apple', 'orange', 'sandwich', 'book',
-            'cell phone', 'remote', 'mouse', 'keyboard', 'scissors', 'toothbrush',
-            'wine glass', 'fork', 'knife', 'spoon', 'laptop', 'sports ball', 'frisbee', 'baseball bat', 'baseball glove'
+            'sock'
         }
         
         self.get_logger().info('🚀 Enhanced 3D Object Detection + Grasp Pose Node Started!')
@@ -326,9 +324,14 @@ class ObjectDetection3DGrasp(Node):
                     class_id = int(detection.results[0].hypothesis.class_id)
                     confidence = detection.results[0].hypothesis.score
                     class_name = self.coco_classes[class_id] if class_id < len(self.coco_classes) else f"class_{class_id}"
+                    # Add confidence filter here just in case
+                    if confidence < 0.9:  # Skip low confidence detections
+                        self.get_logger().debug(f'⏭️ Skipping {class_name} with confidence {confidence:.3f} < 0.9')
+                        continue
                 else:
                     class_name = "unknown"
                     confidence = 0.0
+                    continue
 
                 bbox_x = detection.bbox.center.position.x
                 bbox_y = detection.bbox.center.position.y
