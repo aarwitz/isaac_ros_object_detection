@@ -184,8 +184,8 @@ class Enhanced3DViewer(Node):
                     r = (rgb_packed >> 16) & 0xFF
                     g = (rgb_packed >> 8) & 0xFF
                     b = rgb_packed & 0xFF
-                    
-                    points.extend([float(x), float(y), float(z)])  # Ensure float type
+                    # -y because realsense and threejs have different coordinate systems
+                    points.extend([float(-x), float(-y), float(z)])  # Ensure float type
                     colors.extend([r/255.0, g/255.0, b/255.0])  # Normalize to 0-1
                 except struct.error as e:
                     self.get_logger().warn(f"Failed to unpack point {i}: {e}")
