@@ -131,3 +131,10 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+"""
+Example usage:
+python simple_robot_pick_test.py -0.154 0.035 0.308 /
+dev/ttyUSB0 --dry-run
+"""

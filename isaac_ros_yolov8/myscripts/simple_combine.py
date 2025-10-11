@@ -15,22 +15,22 @@ def combine_core_scripts():
         {
             'name': 'yolov8_3d_grasp_detector.py',
             'description': 'GGCNN detection + grasp',
-            'path': '/home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/yolov8_3d_grasp_detector.py'
+            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_grasp_detector.py'
         },
         {
             'name': 'web_viewer_server_3d.py', 
             'description': 'WebSocket server',
-            'path': '/home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/web_viewer_server_3d.py'
+            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/web_viewer_server_3d.py'
         },
         {
             'name': 'viewer.html',
             'description': 'Web interface', 
-            'path': '/home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/viewer.html'
+            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/viewer.html'
         }
     ]
     
     # Output file
-    output_file = '/home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/core_scripts_combined.txt'
+    output_file = '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/core_scripts_combined.txt'
     
     # Generate combined file
     with open(output_file, 'w') as outfile:

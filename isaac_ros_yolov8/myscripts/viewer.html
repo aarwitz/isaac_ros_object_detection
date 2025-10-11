@@ -195,7 +195,7 @@
       <button id="test-grasp">Test Grasp Marker</button>
       <label><input type="checkbox" id="show-axes" checked> Show Axes</label>
       <label><input type="checkbox" id="show-grasps" checked> Show Grasp Poses</label>
-      <label>Point Size: <input type="range" id="point-size" min="0.001" max="0.02" step="0.001" value="0.005"></label>
+      <label>Point Size: <input type="range" id="point-size" min="1" max="50" step="1" value="5"></label>
       <span>Updates: <span id="update-count">0</span></span>
     </div>
     
@@ -316,7 +316,7 @@
     // 3D Scene Setup
     let scene, camera, renderer, controls, pointCloud;
     let axesHelper, graspMarkers = [];
-    let currentPointSize = 0.005;
+    let currentPointSize = 5;
     let showGrasps = true;
 
     function init3DScene() {
@@ -427,11 +427,11 @@
             debugLog(`Color data issue: colors.length=${data.colors ? data.colors.length : 'none'}, points.length=${data.points.length}`);
           }
 
-          // Create point cloud material with fixed size and proper color handling
+          // Create point cloud material with proper color handling
           const material = new THREE.PointsMaterial({
             size: currentPointSize,
             vertexColors: hasValidColors,
-            sizeAttenuation: false,
+            sizeAttenuation: false,  // false = screen pixels, true = world space
             color: hasValidColors ? undefined : 0x00ff00
           });
 
