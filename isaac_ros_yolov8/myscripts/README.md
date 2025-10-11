@@ -77,7 +77,12 @@ ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=re
 
 My model for socks on white carpter
 ```bash
-ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono_rect_depth,yolov8 model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.onnx engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.plan confidence_threshold:=0.88
+ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono_rect_depth,yolov8 model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.onnx engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.plan confidence_threshold:=0.85
+```
+
+Open up container in a few other terminals with
+```bash
+docker exec -it isaac_ros_dev-aarch64-container bash
 ```
 
 In another terminal in same container run the YOLOv8 visualization script:
@@ -97,6 +102,26 @@ python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8
 
 And then on a client (I am just using my mac laptop) open up viewer.html
 
+
+# Pick and place detected items with Waseshare RoArm M2-S
+Source the venv
+```bash
+source /workspaces/isaac_ros-dev/src/RoArm-M2-S_python/roarmpython-env/bin/activate
+```
+
+Copy an (x,y,z) from the detection output in the GUI and see what poses our script generates with a dry run before running
+```bash
+python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/simple_robot_pick_test.py -0.002 0.039 0.330 /dev/ttyUSB0 --dry-run 
+```
+
+And then you can try them out with
+```bash
+python /workspaces/isaac_ros-dev/src/RoArm-M2-S_python/serial_simple_ctrl.py /dev/ttyUSB0
+```
+You may need
+```bash
+python -m pip install pyserial
+```
 
 # Finetuning yolov8
 - Place objects and run 
