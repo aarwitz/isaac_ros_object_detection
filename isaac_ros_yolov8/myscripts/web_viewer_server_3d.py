@@ -145,8 +145,8 @@ class Enhanced3DViewer(Node):
             points = []
             colors = []
             
-            # Get field offsets
-            x_offset = y_offset = z_offset = rgb_offset = None
+            # Get field offsets for separate r, g, b fields
+            x_offset = y_offset = z_offset = r_off = g_off = b_off = None
             for field in pc_msg.fields:
                 if field.name == 'x':
                     x_offset = field.offset
@@ -154,10 +154,14 @@ class Enhanced3DViewer(Node):
                     y_offset = field.offset
                 elif field.name == 'z':
                     z_offset = field.offset
-                elif field.name == 'rgb':
-                    rgb_offset = field.offset
+                elif field.name == 'r':
+                    r_off = field.offset
+                elif field.name == 'g':
+                    g_off = field.offset
+                elif field.name == 'b':
+                    b_off = field.offset
             
-            if any(offset is None for offset in [x_offset, y_offset, z_offset, rgb_offset]):
+            if any(offset is None for offset in [x_offset, y_offset, z_offset, r_off, g_off, b_off]):
                 self.get_logger().warn(f"Missing required point cloud fields. Available: {[f.name for f in pc_msg.fields]}")
                 return {'points': [], 'colors': [], 'num_points': 0, 'timestamp': time.time()}
             
@@ -170,24 +174,26 @@ class Enhanced3DViewer(Node):
             # Extract points
             point_step = pc_msg.point_step
             max_points = min(pc_msg.width, 5000)  # Increased limit from 1000 to 5000 points
+            
             for i in range(max_points):
                 offset = i * point_step
                 
                 try:
-                    # Extract XYZ
-                    x = struct.unpack('f', data_bytes[offset + x_offset:offset + x_offset + 4])[0]
-                    y = struct.unpack('f', data_bytes[offset + y_offset:offset + y_offset + 4])[0]
-                    z = struct.unpack('f', data_bytes[offset + z_offset:offset + z_offset + 4])[0]
+                    # Extract XYZ using struct.unpack_from for better performance
+                    x = struct.unpack_from('<f', data_bytes, offset + x_offset)[0]
+                    y = struct.unpack_from('<f', data_bytes, offset + y_offset)[0]
+                    z = struct.unpack_from('<f', data_bytes, offset + z_offset)[0]
                     
-                    # Extract RGB
-                    rgb_packed = struct.unpack('I', data_bytes[offset + rgb_offset:offset + rgb_offset + 4])[0]
-                    r = (rgb_packed >> 16) & 0xFF
-                    g = (rgb_packed >> 8) & 0xFF
-                    b = rgb_packed & 0xFF
-                    # -y because realsense and threejs have different coordinate systems
-                    points.extend([float(-x), float(-y), float(z)])  # Ensure float type
+                    # Keep the coordinate system flips you added
+                    points.extend([float(-x), float(-y), float(z)])
+                    
+                    # Extract separate R, G, B bytes (UINT8 fields)
+                    r = data_bytes[offset + r_off]
+                    g = data_bytes[offset + g_off]
+                    b = data_bytes[offset + b_off]
                     colors.extend([r/255.0, g/255.0, b/255.0])  # Normalize to 0-1
-                except struct.error as e:
+                    
+                except (struct.error, IndexError) as e:
                     self.get_logger().warn(f"Failed to unpack point {i}: {e}")
                     continue
             
@@ -213,6 +219,7 @@ class Enhanced3DViewer(Node):
             traceback.print_exc()
             return {'points': [], 'colors': [], 'num_points': 0, 'timestamp': time.time()}
 
+    
     def get_latest_data(self, data_type):
         with self._lock:
             if data_type == '2d':
