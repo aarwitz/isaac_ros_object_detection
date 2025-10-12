@@ -2,8 +2,8 @@
 # filepath: /home/taylor/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/scripts/yolov8_3d_grasp_detector.py
 
 """
-Enhanced 3D Object Detection + GGCNN Grasp Pose Generation
-Combines YOLOv8 object detection with GGCNN grasp pose estimation for robotic manipulation
+3D Object Detection with Point Cloud Generation
+Combines YOLOv8 object detection with depth data for 3D pose estimation
 """
 
 import rclpy
@@ -22,20 +22,7 @@ from std_msgs.msg import String, Header
 import math
 import random
 
-# GGCNN imports
-import torch
-import torch.nn.functional as F
-import sys
-import os
-
-# Add GGCNN to Python path
-sys.path.append('/workspaces/isaac_ros-dev/src/ggcnn')
-try:
-    from models.ggcnn import GGCNN
-    GGCNN_AVAILABLE = True
-except ImportError:
-    print("⚠️ GGCNN not available. Install GGCNN for grasp pose generation.")
-    GGCNN_AVAILABLE = False
+# No additional imports needed for basic 3D pose estimation
 
 def normalize_bbox_from_detection(bbox_x, bbox_y, bbox_w, bbox_h, yolo_w, yolo_h):
     """Convert normalized/pixel bbox coords to pixel coordinates."""
@@ -83,49 +70,17 @@ def get_median_depth_m(depth_img, cx, cy, half_win=3, max_half_win=15):
                 return float(np.median(valid))
     return None
 
-def robust_depth_at_pixel_m(depth_img, px, py, half_win=3, max_half_win=7):
-    """Median depth around a pixel (meters), robust to holes. Works for uint16 mm or float meters."""
-    h, w = depth_img.shape
-    px = int(round(px)); py = int(round(py))
-    if not (0 <= px < w and 0 <= py < h):
-        return None
-
-    is_uint16 = np.issubdtype(depth_img.dtype, np.integer)
-    for hw in range(half_win, max_half_win + 1):
-        x1 = max(0, px - hw); x2 = min(w, px + hw + 1)
-        y1 = max(0, py - hw); y2 = min(h, py + hw + 1)
-        patch = depth_img[y1:y2, x1:x2].ravel()
-        if patch.size == 0: 
-            continue
-
-        if is_uint16:
-            nonzero = patch[patch > 0]
-            if nonzero.size:
-                return float(np.median(nonzero)) / 1000.0
-        else:
-            patchf = patch.astype(np.float32)
-            valid = patchf[np.isfinite(patchf) & (patchf > 0.0)]
-            if valid.size:
-                return float(np.median(valid))
-    return None
-
-class ObjectDetection3DGrasp(Node):
+class ObjectDetection3D(Node):
     def __init__(self):
-        super().__init__('object_detection_3d_grasp')
+        super().__init__('object_detection_3d')
         
         self.bridge = CvBridge()
-        
-        # Initialize GGCNN model
-        self.ggcnn_model = None
-        if GGCNN_AVAILABLE:
-            self.init_ggcnn_model()
         
         # Publishers
         self.point_pub = self.create_publisher(PointStamped, 'detected_objects_3d', 10)
         self.pointcloud_pub = self.create_publisher(PointCloud2, 'detected_objects_pointcloud', 10)
-        self.grasp_pub = self.create_publisher(PoseStamped, 'grasp_poses', 10)
         self.metadata_pub = self.create_publisher(String, 'detection_metadata', 10)
-        self.debug_image_pub = self.create_publisher(Image, 'yolov8_ggcnn_debug', 10)
+        self.debug_image_pub = self.create_publisher(Image, 'yolov8_debug', 10)
         
         # Message filter subscribers
         self.detection_sub = message_filters.Subscriber(self, Detection2DArray, '/detections_output')
@@ -157,101 +112,8 @@ class ObjectDetection3DGrasp(Node):
             'toothbrush'
         ]
         
-        # Graspable object classes (can be customized)
-        self.graspable_classes = {
-            'sock'
-        }
-        
-        self.get_logger().info('🚀 Enhanced 3D Object Detection + Grasp Pose Node Started!')
-        self.get_logger().info(f'🤖 GGCNN Available: {GGCNN_AVAILABLE}')
+        self.get_logger().info('🚀 3D Object Detection Node Started!')
         self.get_logger().info('📡 Waiting for synchronized detection, depth, and color data...')
-
-    def init_ggcnn_model(self):
-        """Initialize GGCNN model for grasp pose estimation."""
-        try:
-            # Try multiple possible paths for GGCNN weights
-            possible_paths = [
-                '/workspaces/isaac_ros-dev/src/ggcnn_weights_cornell/ggcnn_epoch_23_cornell',
-                '/workspaces/isaac_ros-dev/src/ggcnn/ggcnn_weights_cornell/ggcnn_epoch_23_cornell',
-                '/workspaces/isaac_ros-dev/ggcnn_weights_cornell/ggcnn_epoch_23_cornell'
-            ]
-            
-            for model_path in possible_paths:
-                if os.path.exists(model_path):
-                    self.ggcnn_model = torch.load(model_path, map_location=torch.device('cpu'))
-                    self.ggcnn_model.eval()
-                    self.get_logger().info(f'✅ GGCNN model loaded from {model_path}')
-                    return
-            
-            self.get_logger().warn('❌ GGCNN model not found in any expected location')
-            self.get_logger().info('💡 Download weights: wget https://github.com/dougsm/ggcnn/releases/download/v0.1/ggcnn_weights_cornell.zip')
-        except Exception as e:
-            self.get_logger().error(f'❌ Failed to load GGCNN model: {e}')
-
-    def generate_grasp_pose(self, depth_image, depth_crop, crop_x1, crop_y1, fx, fy, cx, cy):
-        """Generate grasp pose using GGCNN for a detected object."""
-        if self.ggcnn_model is None:
-            return None
-        
-        try:
-            # Resize depth crop to 300x300 (GGCNN input size)
-            depth_resized = cv2.resize(depth_crop.astype(np.float32), (300, 300))
-            
-            # Normalize depth (basic normalization)
-            depth_normalized = np.clip(depth_resized / 1000.0, 0.0, 1.0)  # Convert mm to m and normalize
-            
-            # Convert to tensor
-            depth_tensor = torch.from_numpy(depth_normalized).unsqueeze(0).unsqueeze(0)
-            
-            # Run GGCNN inference
-            with torch.no_grad():
-                pos, cos, sin, width = self.ggcnn_model(depth_tensor)
-            
-            # Calculate grasp angle
-            angle = 0.5 * torch.atan2(sin, cos)
-            
-            # Find best grasp location
-            q_img = pos.squeeze().numpy()
-            max_q = np.unravel_index(np.argmax(q_img), q_img.shape)
-            grasp_y, grasp_x = max_q
-            
-            # Scale back to original crop coordinates
-            scale_x = depth_crop.shape[1] / 300.0
-            scale_y = depth_crop.shape[0] / 300.0
-            
-            grasp_x_in_crop = int(grasp_x * scale_x)
-            grasp_y_in_crop = int(grasp_y * scale_y)
-            
-            # Get grasp properties
-            angle_val = angle.squeeze()[grasp_y, grasp_x].item()
-            width_val = width.squeeze()[grasp_y, grasp_x].item()
-            quality = q_img[grasp_y, grasp_x]
-            
-            # Convert to camera coordinates using accurate crop mapping
-            grasp_pixel_x = crop_x1 + grasp_x_in_crop
-            grasp_pixel_y = crop_y1 + grasp_y_in_crop
-            
-            # Get accurate depth at the actual grasp pixel location
-            grasp_depth_m = robust_depth_at_pixel_m(depth_image, grasp_pixel_x, grasp_pixel_y, half_win=3, max_half_win=9)
-            if grasp_depth_m is None or not (0.05 < grasp_depth_m < 10.0):
-                return None
-            
-            # Convert to 3D world coordinates using grasp pixel depth
-            world_x = (grasp_pixel_x - cx) * grasp_depth_m / fx
-            world_y = (grasp_pixel_y - cy) * grasp_depth_m / fy
-            world_z = grasp_depth_m
-            
-            return {
-                'position': [world_x, world_y, world_z],
-                'angle': angle_val,
-                'width': width_val,
-                'quality': quality,
-                'pixel_coords': [grasp_pixel_x, grasp_pixel_y]
-            }
-            
-        except Exception as e:
-            self.get_logger().error(f'❌ GGCNN grasp generation failed: {e}')
-            return None
 
     def pixel_to_world(self, pixel_x, pixel_y, depth_m, fx, fy, cx, cy):
         """Convert pixel coordinates + depth to 3D world coordinates"""
@@ -358,7 +220,7 @@ class ObjectDetection3DGrasp(Node):
 
 
     def process_detections(self, detection_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
-        """Process synchronized detection, depth, and color data with grasp pose generation"""
+        """Process synchronized detection, depth, and color data for 3D pose estimation"""
         try:
             # Convert images
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='16UC1')
@@ -389,10 +251,7 @@ class ObjectDetection3DGrasp(Node):
                     class_id = int(detection.results[0].hypothesis.class_id)
                     confidence = detection.results[0].hypothesis.score
                     class_name = self.coco_classes[class_id] if class_id < len(self.coco_classes) else f"class_{class_id}"
-                    # Add confidence filter here just in case
-                    # if confidence < 0.9:  # Skip low confidence detections
-                    #     self.get_logger().debug(f'⏭️ Skipping {class_name} with confidence {confidence:.3f} < 0.9')
-                    #     continue
+                    # Confidence filtering can be added here if needed
                 else:
                     class_name = "unknown"
                     confidence = 0.0
@@ -436,45 +295,13 @@ class ObjectDetection3DGrasp(Node):
                 )
 
                 # Downsample if needed
-                MAX_POINTS = 8000
+                MAX_POINTS = 20000
                 if len(points) > MAX_POINTS:
                     idx = np.random.choice(len(points), MAX_POINTS, replace=False)
                     points = points[idx]
                     colors = colors[idx]
 
-                # Generate grasp pose if object is graspable
-                grasp_info = None
-                if class_name in self.graspable_classes and self.ggcnn_model is not None:
-                    grasp_info = self.generate_grasp_pose(
-                        depth_image,           # NEW: full depth image for accurate sampling
-                        depth_crop, crop_x1, crop_y1,
-                        fx, fy, cx, cy
-                    )
-                    
-                    if grasp_info:
-                        # Publish grasp pose
-                        pose_msg = PoseStamped()
-                        pose_msg.header = depth_msg.header
-                        pose_msg.pose.position.x = grasp_info['position'][0]
-                        pose_msg.pose.position.y = grasp_info['position'][1] 
-                        pose_msg.pose.position.z = grasp_info['position'][2]
-                        
-                        # Convert angle to quaternion (simplified - assumes grasp in XY plane)
-                        angle = grasp_info['angle']
-                        pose_msg.pose.orientation.x = 0.0
-                        pose_msg.pose.orientation.y = 0.0
-                        pose_msg.pose.orientation.z = math.sin(angle / 2.0)
-                        pose_msg.pose.orientation.w = math.cos(angle / 2.0)
-                        
-                        self.grasp_pub.publish(pose_msg)
-                        
-                        # Draw grasp pose on debug image
-                        if 'pixel_coords' in grasp_info:
-                            px, py = grasp_info['pixel_coords']
-                            if 0 <= px < color_image.shape[1] and 0 <= py < color_image.shape[0]:
-                                cv2.circle(color_image, (int(px), int(py)), 6, (0, 255, 255), -1)  # Yellow grasp point
-                                cv2.putText(color_image, f"G:{grasp_info['quality']:.2f}", 
-                                          (int(px)+8, int(py)-8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                # No grasp pose generation - just 3D detection
 
                 # Publish point cloud
                 if len(points) > 0:
@@ -497,17 +324,8 @@ class ObjectDetection3DGrasp(Node):
                     'bbox_2d': [float(cx_pixel), float(cy_pixel), float(w_pixel), float(h_pixel)],
                     'position_3d': [float(world_x), float(world_y), float(world_z)],
                     'depth_m': float(depth_m),
-                    'num_points': int(len(points)),
-                    'graspable': class_name in self.graspable_classes
+                    'num_points': int(len(points))
                 }
-                
-                if grasp_info:
-                    detection_entry['grasp_pose'] = {
-                        'position': grasp_info['position'],
-                        'angle': float(grasp_info['angle']),
-                        'width': float(grasp_info['width']),
-                        'quality': float(grasp_info['quality'])
-                    }
                 
                 detection_data.append(detection_entry)
                 
@@ -523,8 +341,7 @@ class ObjectDetection3DGrasp(Node):
                 self.get_logger().info(
                     f'🎯 {class_name} (conf: {confidence:.2f}) '
                     f'3D: ({world_x:.3f}, {world_y:.3f}, {world_z:.3f})m '
-                    f'Points: {len(points)} '
-                    f'Graspable: {"✅" if grasp_info else "❌"}'
+                    f'Points: {len(points)}'
                 )
             
             # Publish debug image
@@ -545,12 +362,12 @@ class ObjectDetection3DGrasp(Node):
 def main(args=None):
     rclpy.init(args=args)
     
-    node = ObjectDetection3DGrasp()
+    node = ObjectDetection3D()
     
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('🛑 Shutting down Enhanced 3D Object Detection + Grasp Node')
+        node.get_logger().info('🛑 Shutting down 3D Object Detection Node')
     finally:
         node.destroy_node()
         rclpy.shutdown()

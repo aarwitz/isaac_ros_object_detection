@@ -77,7 +77,7 @@ ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=re
 
 My model for socks on white carpter
 ```bash
-ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono_rect_depth,yolov8 model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.onnx engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.plan confidence_threshold:=0.85
+ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono_rect_depth,yolov8 model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.onnx engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.plan confidence_threshold:=0.83
 ```
 
 Open up container in a few other terminals with
@@ -92,7 +92,7 @@ ros2 run isaac_ros_yolov8 isaac_ros_yolov8_visualizer.py
 
 In another terminal in same container run my 3d detector:
 ```bash
-python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_grasp_detector.py
+python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_detector.py
 ```
 
 In another terminal in same container run my webviewer script:
