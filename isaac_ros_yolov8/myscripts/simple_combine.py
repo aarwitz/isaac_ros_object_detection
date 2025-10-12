@@ -22,11 +22,11 @@ def combine_core_scripts():
             'description': 'WebSocket server',
             'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/web_viewer_server_3d.py'
         },
-        {
-            'name': 'run_robot.py',
-            'description': 'Robot control interface',
-            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/run_robot.py'
-        },
+        # {
+        #     'name': 'run_robot.py',
+        #     'description': 'Robot control interface',
+        #     'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/run_robot.py'
+        # },
         {
             'name': 'viewer.html',
             'description': 'Web interface', 
