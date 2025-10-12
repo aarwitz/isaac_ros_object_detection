@@ -166,7 +166,6 @@
     <div class="info-panel" id="info-panel">
       <div><strong>3D Point Cloud Viewer</strong></div>
       <div id="point-count">Points: 0</div>
-      <div id="detection-info">No detections</div>
 
       <div id="connection-status">🔴 Disconnected</div>
       <div id="rgb-debug">RGB: Not available</div>
@@ -181,12 +180,6 @@
       <button id="connect3d">Connect 3D</button>
       <button id="disconnect3d" disabled>Disconnect</button>
       <br>
-      <label>Metadata URL:</label>
-      <input id="hostMeta" type="text" value="ws://100.110.118.74:8765/metadata" style="width:250px" />
-      <button id="connectMeta">Connect Metadata</button>
-      <button id="disconnectMeta" disabled>Disconnect</button>
-
-      <br>
       <label>Center Point URL:</label>
       <input id="hostCenter" type="text" value="ws://100.110.118.74:8765/center" style="width:250px" />
       <button id="connectCenter">Connect Center</button>
@@ -198,7 +191,7 @@
       <label><input type="checkbox" id="show-axes" checked> Show Axes</label>
       <label><input type="checkbox" id="show-center" checked> Show Center Marker</label>
 
-      <label>Point Size: <input type="range" id="point-size" min="0.1" max="10" step="0.5" value="0.5"></label>
+      <label>Point Size: <input type="range" id="point-size" min="0.1" max="15" step="0.1" value="0.5" style="width: 150px;"></label>
       <span>Updates: <span id="update-count">0</span></span>
     </div>
     
@@ -519,61 +512,23 @@
         // Update the 3D marker
         createCenterMarker(data.x, data.y, data.z);
         
-        // Update info panel
-        document.getElementById('detection-info').innerHTML = 
-          document.getElementById('detection-info').innerHTML.replace(
-            /Center: .*/g, 
-            `Center: (${data.x.toFixed(3)}, ${data.y.toFixed(3)}, ${data.z.toFixed(3)})m`
-          );
-        
       } catch (e) {
         debugLog(`Center point parse error: ${e.message}`);
         console.error('Failed to parse center point', e);
       }
     }
 
-    // Metadata handling
-    let latestMetadata = null;
-    function updateMetadata(metadataString) {
-      try {
-        debugLog(`Received metadata: ${metadataString.length} bytes`);
-        
-        const data = JSON.parse(metadataString);
-        latestMetadata = data;
-        
-        if (Array.isArray(data) && data.length > 0) {
-          const detection = data[0]; // Show first detection
-          document.getElementById('detection-info').innerHTML = 
-            `<strong>${detection.class_name}</strong><br>` +
-            `Conf: ${(detection.confidence * 100).toFixed(1)}%<br>` +
-            `3D: (${detection.position_3d.map(v => v.toFixed(3)).join(', ')})m<br>` +
-            `Depth: ${detection.depth_m.toFixed(3)}m<br>` +
-            `Points: ${detection.num_points}<br>` +
-            `Center: Waiting...`;
-          
-          debugLog(`Detection: ${detection.class_name} at ${detection.position_3d.map(v => v.toFixed(3)).join(',')}`);
-        } else {
-          document.getElementById('detection-info').textContent = 'No detections';
-        }
-      } catch (e) {
-        debugLog(`Metadata parse error: ${e.message}`);
-        console.error('Failed to parse metadata', e);
-      }
-    }
+
 
     // 3D WebSocket connections
     let ws3d = null;
-    let wsMeta = null;
     let wsCenter = null;
 
     const status3d = document.getElementById('status3d');
     const host3dInput = document.getElementById('host3d');
-    const hostMetaInput = document.getElementById('hostMeta');
     const hostCenterInput = document.getElementById('hostCenter');
     const connect3dBtn = document.getElementById('connect3d');
     const disconnect3dBtn = document.getElementById('disconnect3d');
-    const connectMetaBtn = document.getElementById('connectMeta');
-    const disconnectMetaBtn = document.getElementById('disconnectMeta');
     const connectCenterBtn = document.getElementById('connectCenter');
     const disconnectCenterBtn = document.getElementById('disconnectCenter');
     const resetViewBtn = document.getElementById('reset-view');
@@ -620,39 +575,7 @@
       };
     }
 
-    function connectMetadata(url) {
-      if (wsMeta) wsMeta.close();
-      debugLog(`Connecting to metadata stream: ${url}`);
-      wsMeta = new WebSocket(url);
-      wsMeta.binaryType = 'arraybuffer';
 
-      wsMeta.onopen = () => {
-        connectMetaBtn.disabled = true;
-        disconnectMetaBtn.disabled = false;
-        debugLog('Metadata WebSocket connected');
-      };
-
-      wsMeta.onmessage = (evt) => {
-        try {
-          if (evt.data.byteLength > 0) {
-            const metadataString = new TextDecoder().decode(evt.data);
-            updateMetadata(metadataString);
-          }
-        } catch (e) {
-          debugLog(`Metadata error: ${e.message}`);
-        }
-      };
-
-      wsMeta.onclose = (e) => {
-        connectMetaBtn.disabled = false;
-        disconnectMetaBtn.disabled = true;
-        debugLog(`Metadata WebSocket closed: ${e.code}`);
-      };
-
-      wsMeta.onerror = (err) => {
-        debugLog(`Metadata WebSocket error: ${err}`);
-      };
-    }
 
     function connectCenter(url) {
       if (wsCenter) wsCenter.close();
@@ -707,13 +630,7 @@
       }
     };
 
-    connectMetaBtn.onclick = () => connectMetadata(hostMetaInput.value);
-    disconnectMetaBtn.onclick = () => {
-      if (wsMeta) {
-        wsMeta.close();
-        wsMeta = null;
-      }
-    };
+
 
     connectCenterBtn.onclick = () => connectCenter(hostCenterInput.value);
     disconnectCenterBtn.onclick = () => {
