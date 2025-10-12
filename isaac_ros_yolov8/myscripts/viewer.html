@@ -183,6 +183,11 @@
       <label>Center Point URL:</label>
       <input id="hostCenter" type="text" value="ws://100.110.118.74:8765/center" style="width:250px" />
       <button id="toggleCenter">Show Center Point</button>
+      
+      <br>
+      <label>Full Scene URL:</label>
+      <input id="hostFullScene" type="text" value="ws://100.110.118.74:8765/full_scene" style="width:250px" />
+      <button id="toggleFullScene">Show Whole Scene</button>
 
       <br>
       <button id="reset-view">Reset View</button>
@@ -426,6 +431,12 @@
     let updateCounter = 0;
     function updatePointCloud(pointData) {
       try {
+        // If we're showing full scene, don't update with object-only point cloud
+        if (showingFullScene) {
+          debugLog('Skipping object point cloud update while showing full scene');
+          return;
+        }
+        
         debugLog(`Received point cloud data: ${pointData.length} bytes`);
         
         const data = JSON.parse(pointData);
@@ -481,7 +492,7 @@
           scene.add(pointCloud);
 
           // Update info panel
-          document.getElementById('point-count').textContent = `Points: ${data.num_points}`;
+          document.getElementById('point-count').textContent = `Object Points: ${data.num_points}`;
           document.getElementById('connection-status').textContent = '🟢 Connected';
           
           updateCounter++;
@@ -522,14 +533,19 @@
     // 3D WebSocket connections
     let ws3d = null;
     let wsCenter = null;
+    let wsFullScene = null;
     let centerConnected = false;
+    let fullSceneConnected = false;
+    let showingFullScene = false;
 
     const status3d = document.getElementById('status3d');
     const host3dInput = document.getElementById('host3d');
     const hostCenterInput = document.getElementById('hostCenter');
+    const hostFullSceneInput = document.getElementById('hostFullScene');
     const connect3dBtn = document.getElementById('connect3d');
     const disconnect3dBtn = document.getElementById('disconnect3d');
     const toggleCenterBtn = document.getElementById('toggleCenter');
+    const toggleFullSceneBtn = document.getElementById('toggleFullScene');
     const resetViewBtn = document.getElementById('reset-view');
     const showAxesCheckbox = document.getElementById('show-axes');
     const showCenterCheckbox = document.getElementById('show-center');
@@ -634,7 +650,134 @@
       debugLog('Center point manually disconnected and marker hidden');
     }
 
+    function connectFullScene(url) {
+      if (wsFullScene) wsFullScene.close();
+      debugLog(`Connecting to full scene stream: ${url}`);
+      wsFullScene = new WebSocket(url);
+      wsFullScene.binaryType = 'arraybuffer';
 
+      wsFullScene.onopen = () => {
+        fullSceneConnected = true;
+        showingFullScene = true;
+        toggleFullSceneBtn.textContent = 'Hide Whole Scene';
+        toggleFullSceneBtn.style.background = '#0a5a0a';
+        debugLog('Full scene WebSocket connected');
+      };
+
+      wsFullScene.onmessage = (evt) => {
+        try {
+          if (evt.data.byteLength > 0) {
+            const fullSceneString = new TextDecoder().decode(evt.data);
+            updateFullScenePointCloud(fullSceneString);
+          }
+        } catch (e) {
+          debugLog(`Full scene error: ${e.message}`);
+        }
+      };
+
+      wsFullScene.onclose = (e) => {
+        fullSceneConnected = false;
+        showingFullScene = false;
+        toggleFullSceneBtn.textContent = 'Show Whole Scene';
+        toggleFullSceneBtn.style.background = '#333';
+        debugLog(`Full scene WebSocket closed: ${e.code}`);
+        // Switch back to object-only point cloud
+        if (ws3d && ws3d.readyState === WebSocket.OPEN) {
+          debugLog('Switching back to object-only point cloud');
+        }
+      };
+
+      wsFullScene.onerror = (err) => {
+        debugLog(`Full scene WebSocket error: ${err}`);
+      };
+    }
+
+    function disconnectFullScene() {
+      if (wsFullScene) {
+        wsFullScene.close();
+        wsFullScene = null;
+      }
+      // Manually update the state since onclose might not fire immediately
+      fullSceneConnected = false;
+      showingFullScene = false;
+      toggleFullSceneBtn.textContent = 'Show Whole Scene';
+      toggleFullSceneBtn.style.background = '#333';
+      debugLog('Full scene manually disconnected, switching back to object-only view');
+    }
+
+    function updateFullScenePointCloud(dataString) {
+      try {
+        const data = JSON.parse(dataString);
+        
+        if (data && data.points && data.colors) {
+          debugLog(`Full scene: ${data.points.length / 3} points received`);
+          
+          // Debug: Check point cloud bounds
+          const positions = new Float32Array(data.points);
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+          for (let i = 0; i < positions.length; i += 3) {
+            const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+            if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+              minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+              minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+              minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+            }
+          }
+          debugLog(`Full scene bounds: X[${minX.toFixed(2)}, ${maxX.toFixed(2)}] Y[${minY.toFixed(2)}, ${maxY.toFixed(2)}] Z[${minZ.toFixed(2)}, ${maxZ.toFixed(2)}]`);
+          
+          // Use the same point cloud updating logic but for full scene
+          if (pointCloud) {
+            scene.remove(pointCloud);
+            pointCloud.geometry.dispose();
+            pointCloud.material.dispose();
+          }
+
+          const geometry = new THREE.BufferGeometry();
+          const colors = new Float32Array(data.colors);
+          
+          // Debug: Check color values
+          let minR = 1, maxR = 0, minG = 1, maxG = 0, minB = 1, maxB = 0;
+          let blackPixels = 0, greenPixels = 0;
+          for (let i = 0; i < colors.length; i += 3) {
+            const r = colors[i], g = colors[i + 1], b = colors[i + 2];
+            minR = Math.min(minR, r); maxR = Math.max(maxR, r);
+            minG = Math.min(minG, g); maxG = Math.max(maxG, g);
+            minB = Math.min(minB, b); maxB = Math.max(maxB, b);
+            
+            if (r === 0 && g === 0 && b === 0) blackPixels++;
+            if (g > 0.5 && r < 0.3 && b < 0.3) greenPixels++;
+          }
+          debugLog(`Full scene colors: R[${minR.toFixed(2)}-${maxR.toFixed(2)}] G[${minG.toFixed(2)}-${maxG.toFixed(2)}] B[${minB.toFixed(2)}-${maxB.toFixed(2)}], Black: ${blackPixels}, Green-ish: ${greenPixels}`);
+          
+          geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+          geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+          
+          // Use same material settings as object point cloud for consistency
+          const material = new THREE.PointsMaterial({
+            size: parseFloat(pointSizeSlider.value),
+            vertexColors: true,
+            sizeAttenuation: false  // Changed to match object point cloud behavior
+          });
+          
+          pointCloud = new THREE.Points(geometry, material);
+          scene.add(pointCloud);
+          
+          // Update info
+          const pointCount = positions.length / 3;
+          document.getElementById('point-count').textContent = `Full Scene Points: ${pointCount}`;
+          
+          // Update RGB debug info if available
+          if (data.rgb_debug) {
+            document.getElementById('rgb-debug').textContent = `RGB: ${data.rgb_debug}`;
+          }
+          
+          debugLog(`Full scene point cloud updated: ${pointCount} points`);
+        }
+      } catch (e) {
+        debugLog(`Full scene parse error: ${e.message}`);
+        console.error('Failed to parse full scene point cloud', e);
+      }
+    }
 
     // Event listeners
     connect2dBtn.onclick = () => connect2D(host2dInput.value);
@@ -660,6 +803,14 @@
         connectCenter(hostCenterInput.value);
       } else {
         disconnectCenter();
+      }
+    };
+
+    toggleFullSceneBtn.onclick = () => {
+      if (!fullSceneConnected) {
+        connectFullScene(hostFullSceneInput.value);
+      } else {
+        disconnectFullScene();
       }
     };
 
