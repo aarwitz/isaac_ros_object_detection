@@ -23,6 +23,11 @@ def combine_core_scripts():
             'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/web_viewer_server_3d.py'
         },
         {
+            'name': 'run_robot.py',
+            'description': 'Robot control interface',
+            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/run_robot.py'
+        },
+        {
             'name': 'viewer.html',
             'description': 'Web interface', 
             'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/viewer.html'
@@ -105,15 +110,6 @@ def main():
     
     try:
         output_file = combine_core_scripts()
-        
-        print(f"\n✅ Combined core scripts!")
-        print(f"📂 Output: {os.path.basename(output_file)}")
-        print("\n📋 Combined:")
-        print("   1. yolov8_3d_grasp_detector.py (GGCNN detection + grasp)")
-        print("   2. web_viewer_server_3d.py (WebSocket server)")
-        print("   3. enhanced_viewer_fixed.html (Web interface)")
-        print("   4. ggcnn_robot_controller.py (Robot control)")
-        
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         return 1

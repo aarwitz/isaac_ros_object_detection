@@ -83,6 +83,32 @@ def get_median_depth_m(depth_img, cx, cy, half_win=3, max_half_win=15):
                 return float(np.median(valid))
     return None
 
+def robust_depth_at_pixel_m(depth_img, px, py, half_win=3, max_half_win=7):
+    """Median depth around a pixel (meters), robust to holes. Works for uint16 mm or float meters."""
+    h, w = depth_img.shape
+    px = int(round(px)); py = int(round(py))
+    if not (0 <= px < w and 0 <= py < h):
+        return None
+
+    is_uint16 = np.issubdtype(depth_img.dtype, np.integer)
+    for hw in range(half_win, max_half_win + 1):
+        x1 = max(0, px - hw); x2 = min(w, px + hw + 1)
+        y1 = max(0, py - hw); y2 = min(h, py + hw + 1)
+        patch = depth_img[y1:y2, x1:x2].ravel()
+        if patch.size == 0: 
+            continue
+
+        if is_uint16:
+            nonzero = patch[patch > 0]
+            if nonzero.size:
+                return float(np.median(nonzero)) / 1000.0
+        else:
+            patchf = patch.astype(np.float32)
+            valid = patchf[np.isfinite(patchf) & (patchf > 0.0)]
+            if valid.size:
+                return float(np.median(valid))
+    return None
+
 class ObjectDetection3DGrasp(Node):
     def __init__(self):
         super().__init__('object_detection_3d_grasp')
@@ -162,7 +188,7 @@ class ObjectDetection3DGrasp(Node):
         except Exception as e:
             self.get_logger().error(f'❌ Failed to load GGCNN model: {e}')
 
-    def generate_grasp_pose(self, depth_crop, crop_x1, crop_y1, fx, fy, cx, cy, depth_m):
+    def generate_grasp_pose(self, depth_image, depth_crop, crop_x1, crop_y1, fx, fy, cx, cy):
         """Generate grasp pose using GGCNN for a detected object."""
         if self.ggcnn_model is None:
             return None
@@ -205,10 +231,15 @@ class ObjectDetection3DGrasp(Node):
             grasp_pixel_x = crop_x1 + grasp_x_in_crop
             grasp_pixel_y = crop_y1 + grasp_y_in_crop
             
-            # Convert to 3D world coordinates
-            world_x = (grasp_pixel_x - cx) * depth_m / fx
-            world_y = (grasp_pixel_y - cy) * depth_m / fy
-            world_z = depth_m
+            # Get accurate depth at the actual grasp pixel location
+            grasp_depth_m = robust_depth_at_pixel_m(depth_image, grasp_pixel_x, grasp_pixel_y, half_win=3, max_half_win=9)
+            if grasp_depth_m is None or not (0.05 < grasp_depth_m < 10.0):
+                return None
+            
+            # Convert to 3D world coordinates using grasp pixel depth
+            world_x = (grasp_pixel_x - cx) * grasp_depth_m / fx
+            world_y = (grasp_pixel_y - cy) * grasp_depth_m / fy
+            world_z = grasp_depth_m
             
             return {
                 'position': [world_x, world_y, world_z],
@@ -415,7 +446,9 @@ class ObjectDetection3DGrasp(Node):
                 grasp_info = None
                 if class_name in self.graspable_classes and self.ggcnn_model is not None:
                     grasp_info = self.generate_grasp_pose(
-                        depth_crop, crop_x1, crop_y1, fx, fy, cx, cy, depth_m
+                        depth_image,           # NEW: full depth image for accurate sampling
+                        depth_crop, crop_x1, crop_y1,
+                        fx, fy, cx, cy
                     )
                     
                     if grasp_info:
