@@ -182,8 +182,7 @@
       <br>
       <label>Center Point URL:</label>
       <input id="hostCenter" type="text" value="ws://100.110.118.74:8765/center" style="width:250px" />
-      <button id="connectCenter">Connect Center</button>
-      <button id="disconnectCenter" disabled>Disconnect</button>
+      <button id="toggleCenter">Show Center Point</button>
 
       <br>
       <button id="reset-view">Reset View</button>
@@ -523,14 +522,14 @@
     // 3D WebSocket connections
     let ws3d = null;
     let wsCenter = null;
+    let centerConnected = false;
 
     const status3d = document.getElementById('status3d');
     const host3dInput = document.getElementById('host3d');
     const hostCenterInput = document.getElementById('hostCenter');
     const connect3dBtn = document.getElementById('connect3d');
     const disconnect3dBtn = document.getElementById('disconnect3d');
-    const connectCenterBtn = document.getElementById('connectCenter');
-    const disconnectCenterBtn = document.getElementById('disconnectCenter');
+    const toggleCenterBtn = document.getElementById('toggleCenter');
     const resetViewBtn = document.getElementById('reset-view');
     const showAxesCheckbox = document.getElementById('show-axes');
     const showCenterCheckbox = document.getElementById('show-center');
@@ -584,8 +583,9 @@
       wsCenter.binaryType = 'arraybuffer';
 
       wsCenter.onopen = () => {
-        connectCenterBtn.disabled = true;
-        disconnectCenterBtn.disabled = false;
+        centerConnected = true;
+        toggleCenterBtn.textContent = 'Hide Center Points';
+        toggleCenterBtn.style.background = '#0a5a0a';
         debugLog('Center point WebSocket connected');
       };
 
@@ -601,14 +601,37 @@
       };
 
       wsCenter.onclose = (e) => {
-        connectCenterBtn.disabled = false;
-        disconnectCenterBtn.disabled = true;
+        centerConnected = false;
+        toggleCenterBtn.textContent = 'Show Center Points';
+        toggleCenterBtn.style.background = '#333';
         debugLog(`Center point WebSocket closed: ${e.code}`);
       };
 
       wsCenter.onerror = (err) => {
         debugLog(`Center point WebSocket error: ${err}`);
       };
+    }
+
+    function disconnectCenter() {
+      if (wsCenter) {
+        wsCenter.close();
+        wsCenter = null;
+      }
+      // Hide the existing center marker
+      if (centerMarker) {
+        scene.remove(centerMarker);
+        // Dispose of geometries and materials
+        centerMarker.traverse((child) => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+        centerMarker = null;
+      }
+      // Manually update the state since onclose might not fire immediately
+      centerConnected = false;
+      toggleCenterBtn.textContent = 'Show Center Points';
+      toggleCenterBtn.style.background = '#333';
+      debugLog('Center point manually disconnected and marker hidden');
     }
 
 
@@ -632,11 +655,11 @@
 
 
 
-    connectCenterBtn.onclick = () => connectCenter(hostCenterInput.value);
-    disconnectCenterBtn.onclick = () => {
-      if (wsCenter) {
-        wsCenter.close();
-        wsCenter = null;
+    toggleCenterBtn.onclick = () => {
+      if (!centerConnected) {
+        connectCenter(hostCenterInput.value);
+      } else {
+        disconnectCenter();
       }
     };
 
