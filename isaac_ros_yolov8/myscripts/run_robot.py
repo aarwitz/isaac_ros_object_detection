@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """run_robot.py
 
-Automatic robot control script that listens to ROS detection topics
-and continuously picks up detected objects using the robot arm.
+Intelligent automatic robot control script that listens to ROS detection topics
+and continuously picks up detected objects using smart selection logic.
+
+The script collects detection poses (up to 100) with confidence scores, then:
+1. Filters for detections from the last 5 seconds with confidence > 0.3
+2. Selects the top 20 highest confidence detections  
+3. From those, picks the one closest to the robot's current position
+4. This minimizes robot movement and ensures high-quality picks
 
 Usage:
 python run_robot.py /dev/ttyUSB0                    # Run with robot
@@ -19,6 +25,8 @@ import argparse
 import json
 import threading
 import queue
+import math
+from collections import deque
 
 try:
     import serial
@@ -53,6 +61,66 @@ def realsense_to_robot_coords(rs_x, rs_y, rs_z):
         'pick_point': {'x': just_above_x, 'y': just_above_y, 'z': just_above_z - 115},
     }
 
+def euclidean_distance(pos1, pos2):
+    """Calculate 3D euclidean distance between two positions"""
+    return math.sqrt(
+        (pos1['x'] - pos2['x'])**2 + 
+        (pos1['y'] - pos2['y'])**2 + 
+        (pos1['z'] - pos2['z'])**2
+    )
+
+def select_best_detection(detections, current_robot_pos=None, top_n=20):
+    """
+    Select best detection from history using confidence and distance.
+    
+    Args:
+        detections: List of detection dictionaries with x,y,z,confidence,timestamp
+        current_robot_pos: Current robot position dict with x,y,z (in robot coords)
+        top_n: Number of top confidence detections to consider
+    
+    Returns:
+        Best detection dict or None if no good candidates
+    """
+    if not detections:
+        return None
+    
+    # Filter recent detections (last 5 seconds)
+    current_time = time.time()
+    recent_detections = [
+        d for d in detections 
+        if current_time - d['timestamp'] < 5.0 and d['confidence'] > 0.3
+    ]
+    
+    if not recent_detections:
+        return None
+    
+    # Sort by confidence and take top N
+    top_confident = sorted(recent_detections, key=lambda d: d['confidence'], reverse=True)[:top_n]
+    
+    if not current_robot_pos:
+        # If no robot position known, just return highest confidence
+        return top_confident[0]
+    
+    # Convert detections to robot coordinates and calculate distances
+    candidates = []
+    for detection in top_confident:
+        robot_coords = realsense_to_robot_coords(detection['x'], detection['y'], detection['z'])
+        target_pos = robot_coords['above_pick']  # Use above_pick as reference point
+        
+        distance = euclidean_distance(target_pos, current_robot_pos)
+        
+        candidates.append({
+            'detection': detection,
+            'robot_coords': robot_coords,
+            'distance': distance,
+            'score': detection['confidence'] * (1.0 / (1.0 + distance/1000.0))  # Combine confidence and distance
+        })
+    
+    # Sort by combined score (higher is better)
+    candidates.sort(key=lambda c: c['score'], reverse=True)
+    
+    return candidates[0]['detection'] if candidates else None
+
 def make_robot_sequence(rs_x, rs_y, rs_z):
     """Generate robot pick sequence from RealSense coordinates"""
     
@@ -75,8 +143,8 @@ def make_robot_sequence(rs_x, rs_y, rs_z):
         ({"T": 104, "x": above['x'], "y": above['y'], "z": above['z'], "t": 3.14, "spd": 0.25}, 3.0),
 
         # 5. Stay above pick point but release sock out of gripper
-        ({"T": 104, "x": above['x'], "y": above['y'], "z": above['z'], "t": 0, "spd": 0.25}, 3.0),
-    ]
+        ({"T": 104, "x": above['x'], "y": above['y'], "z": above['z'], "t": 0, "spd": 0.25}, 4.0),
+    ], coords  # Also return coords for position tracking
 
 
 class RobotController(Node):
@@ -88,8 +156,10 @@ class RobotController(Node):
         self.pick_once = pick_once
         self.ser = None
         
-        # Queue to store detection coordinates
-        self.detection_queue = queue.Queue(maxsize=5)  # Keep only last 5 detections
+        # Store detection history with confidence scores
+        self.detection_history = deque()  # Keep last 100 detections
+        self.max_history_size = 100
+        self.current_robot_pos = None  # Track robot position for distance calculations
         
         # Subscribers
         self.point_sub = self.create_subscription(
@@ -109,6 +179,11 @@ class RobotController(Node):
         # Status tracking
         self.last_detection_time = 0
         self.robot_busy = False
+        self.pending_metadata = {}  # Store metadata until we get the corresponding point
+        
+        # Collection parameters
+        self.collection_window = 3.0  # Collect detections for 3 seconds
+        self.min_detections_for_pick = 10  # Minimum detections before considering a pick
         
         # Initialize serial connection
         if not self.dry_run:
@@ -139,21 +214,49 @@ class RobotController(Node):
             x = msg.point.x
             y = msg.point.y 
             z = msg.point.z
+            timestamp = time.time()
             
-            # Update detection queue (remove oldest if full)
-            if self.detection_queue.full():
-                try:
-                    self.detection_queue.get_nowait()
-                except queue.Empty:
-                    pass
+            # Look for matching metadata (use timestamp proximity)
+            confidence = 0.5  # Default confidence
+            class_name = "unknown"
             
-            self.detection_queue.put((x, y, z, time.time()))
-            self.last_detection_time = time.time()
+            # Find closest metadata by timestamp (within 0.1 seconds)
+            best_match = None
+            best_time_diff = float('inf')
             
-            self.get_logger().info(f'🎯 Detection: ({x:.3f}, {y:.3f}, {z:.3f})')
+            for ts, metadata in list(self.pending_metadata.items()):
+                time_diff = abs(timestamp - ts)
+                if time_diff < 0.1 and time_diff < best_time_diff:
+                    best_match = (ts, metadata)
+                    best_time_diff = time_diff
             
-            # Start robot sequence if not busy
-            if not self.robot_busy:
+            if best_match:
+                ts, metadata = best_match
+                confidence = metadata.get('confidence', 0.5)
+                class_name = metadata.get('class_name', 'unknown')
+                # Remove used metadata
+                del self.pending_metadata[ts]
+            
+            # Store detection with all info
+            detection = {
+                'x': x, 'y': y, 'z': z,
+                'confidence': confidence,
+                'class_name': class_name,
+                'timestamp': timestamp
+            }
+            
+            self.detection_history.append(detection)
+            
+            # Maintain max history size manually
+            if len(self.detection_history) > self.max_history_size:
+                self.detection_history.popleft()
+            
+            self.last_detection_time = timestamp
+            
+            self.get_logger().info(f'🎯 Detection: {class_name} ({x:.3f}, {y:.3f}, {z:.3f}) conf={confidence:.3f}')
+            
+            # Start robot sequence if not busy and we have enough detections
+            if not self.robot_busy and len(self.detection_history) >= self.min_detections_for_pick:
                 self.start_robot_sequence()
                 
         except Exception as e:
@@ -163,13 +266,23 @@ class RobotController(Node):
         """Callback for detection metadata (for additional info)"""
         try:
             data = json.loads(msg.data)
+            timestamp = time.time()
+            
             if data:
-                # Log first detection info
-                detection = data[0]
-                self.get_logger().debug(
-                    f"📊 {detection['class_name']} confidence: {detection['confidence']:.3f}, "
-                    f"graspable: {detection.get('graspable', False)}"
-                )
+                # Store metadata temporarily until matching point arrives
+                for detection in data:
+                    self.pending_metadata[timestamp] = {
+                        'confidence': detection.get('confidence', 0.5),
+                        'class_name': detection.get('class_name', 'unknown'),
+                        'graspable': detection.get('graspable', False)
+                    }
+                    
+                # Clean up old metadata (older than 1 second)
+                cutoff_time = timestamp - 1.0
+                old_keys = [ts for ts in self.pending_metadata.keys() if ts < cutoff_time]
+                for old_key in old_keys:
+                    del self.pending_metadata[old_key]
+                    
         except Exception as e:
             self.get_logger().debug(f'Metadata parse error: {e}')
 
@@ -179,19 +292,33 @@ class RobotController(Node):
             return
             
         try:
-            # Get latest detection
-            x, y, z, timestamp = self.detection_queue.get_nowait()
+            # Select best detection from history
+            best_detection = select_best_detection(
+                list(self.detection_history), 
+                self.current_robot_pos, 
+                top_n=20
+            )
+            
+            if not best_detection:
+                self.get_logger().debug('No suitable detections for robot sequence')
+                return
+            
+            self.get_logger().info(
+                f'🎯 Selected best target: {best_detection["class_name"]} '
+                f'conf={best_detection["confidence"]:.3f} '
+                f'pos=({best_detection["x"]:.3f}, {best_detection["y"]:.3f}, {best_detection["z"]:.3f})'
+            )
             
             # Start robot sequence in background thread
             robot_thread = threading.Thread(
                 target=self.execute_robot_sequence,
-                args=(x, y, z),
+                args=(best_detection["x"], best_detection["y"], best_detection["z"]),
                 daemon=True
             )
             robot_thread.start()
             
-        except queue.Empty:
-            self.get_logger().debug('No detections available for robot sequence')
+        except Exception as e:
+            self.get_logger().error(f'❌ Error starting robot sequence: {e}')
 
     def execute_robot_sequence(self, rs_x, rs_y, rs_z):
         """Execute complete robot pick sequence"""
@@ -200,13 +327,23 @@ class RobotController(Node):
         try:
             self.get_logger().info(f'🤖 Starting robot sequence for ({rs_x:.3f}, {rs_y:.3f}, {rs_z:.3f})')
             
-            # Generate robot sequence
-            sequence = make_robot_sequence(rs_x, rs_y, rs_z)
+            # Generate robot sequence and get coordinates
+            sequence, coords = make_robot_sequence(rs_x, rs_y, rs_z)
+            
+            # Update current robot position tracking
+            self.current_robot_pos = coords['above_pick'].copy()
             
             # Execute sequence
             self.send_sequence(sequence)
             
             self.get_logger().info('✅ Robot sequence completed!')
+            
+            # Clear old detections after successful pick (keep last 10)
+            if len(self.detection_history) > 10:
+                # Keep only the most recent detections
+                recent_detections = list(self.detection_history)[-10:]
+                self.detection_history.clear()
+                self.detection_history.extend(recent_detections)
             
             # If pick_once mode, shutdown
             if self.pick_once:

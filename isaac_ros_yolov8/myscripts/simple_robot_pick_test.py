@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""simple_realsense_test.py
+"""simple_robot_pick_test.py
 
 Simple test script to convert RealSense coordinates to robot coordinates
 Takes x,y,z from RealSense and calculates robot positions using your calibration math
@@ -28,23 +28,22 @@ def realsense_to_robot_coords(rs_x, rs_y, rs_z):
     Returns:
         dict with 'above_pick' and 'just_above_pick' robot coordinates in mm
     """
-    
+
     # Above pick point (100mm higher)
-    above_x = (1000 * rs_z) + 100
+    above_x = (1000 * rs_z) + 50
     above_y = (-1 * 1000 * rs_x)
-    above_z = (-1 * 1000 * rs_y)
+    above_z = (-1 * 1000 * rs_y) + 130
     
     # Just above pick point (touching ball level)
-    just_above_x = (1000 * rs_z) + 80
-    just_above_y = (-1 * 1000 * rs_x) + 30
-    just_above_z = (-1 * 1000 * rs_y) - 100
+    just_above_x = (1000 * rs_z) + 60
+    just_above_y = (-1 * 1000 * rs_x) + 25
+    just_above_z = (-1 * 1000 * rs_y) - 40
     
     return {
         'above_pick': {'x': above_x, 'y': above_y, 'z': above_z},
         'just_above_pick': {'x': just_above_x, 'y': just_above_y, 'z': just_above_z},
-        'pick_point': {'x': just_above_x, 'y': just_above_y, 'z': just_above_z - 75},
+        'pick_point': {'x': just_above_x, 'y': just_above_y, 'z': just_above_z - 95},
     }
-
 
 def make_test_sequence(rs_x, rs_y, rs_z):
     """Generate robot test sequence from RealSense coordinates"""
@@ -60,9 +59,13 @@ def make_test_sequence(rs_x, rs_y, rs_z):
         ({"T": 104, "x": above['x'], "y": above['y'], "z": above['z'], "t": 0, "spd": 0.25}, 2.0),
         
         # 3. Move to just above pick point (about to touch)
-        ({"T": 104, "x": just_above['x'], "y": just_above['y'], "z": just_above['z'], "t": 0, "spd": 0.15}, 2.0),
+        ({"T": 104, "x": just_above['x'], "y": just_above['y'], "z": just_above['z'], "t": 0, "spd": 0.25}, 1.0),
         # 3. Move to pick point actual
-        ({"T": 104, "x": pick_point['x'], "y": pick_point['y'], "z": pick_point['z'], "t": 3.14, "spd": 0.15}, 2.0),
+        ({"T": 104, "x": pick_point['x'], "y": pick_point['y'], "z": pick_point['z'], "t": 3.14, "spd": 0.25}, 2.0),
+        #4. Move back to above pick point but with gripper closed
+        ({"T": 104, "x": above['x'], "y": above['y'], "z": above['z'], "t": 3.14, "spd": 0.25}, 1.5),
+        #5 Stay above pick point but release sock out of gripper
+        ({"T": 104, "x": above['x'], "y": above['y'], "z": above['z'], "t": 3.14, "spd": 0.25}, 5.0),
     ]
 
 
@@ -135,6 +138,6 @@ if __name__ == '__main__':
 
 """
 Example usage:
-python simple_robot_pick_test.py -0.154 0.035 0.308 /
-dev/ttyUSB0 --dry-run
+python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/simple_robot_pick_test.py -0.182 0.071 0.615 /dev/ttyUSB0 --dry-run
+
 """
