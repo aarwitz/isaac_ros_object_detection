@@ -380,32 +380,45 @@
       // Remove existing marker
       if (centerMarker) {
         scene.remove(centerMarker);
-        centerMarker.geometry.dispose();
-        centerMarker.material.dispose();
+        // Dispose of all child geometries and materials
+        centerMarker.traverse((child) => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
       }
 
-      // Create a bright sphere to mark the center point
-      const geometry = new THREE.SphereGeometry(0.02, 16, 12); // 2cm radius sphere
-      const material = new THREE.MeshBasicMaterial({ 
+      // Create a group to hold both the solid sphere and wireframe
+      centerMarker = new THREE.Group();
+      centerMarker.position.set(x, y, z);
+
+      // Create a bright solid sphere to mark the center point
+      const solidGeometry = new THREE.SphereGeometry(0.02, 16, 12); // 2cm radius sphere
+      const solidMaterial = new THREE.MeshBasicMaterial({ 
         color: 0xff0000, // Bright red
         transparent: true,
-        opacity: 0.8
+        opacity: 0.7
       });
       
-      centerMarker = new THREE.Mesh(geometry, material);
-      centerMarker.position.set(x, y, z);
+      const solidSphere = new THREE.Mesh(solidGeometry, solidMaterial);
+      centerMarker.add(solidSphere);
+
+      // Add a slightly larger wireframe outline for better visibility
+      const wireGeometry = new THREE.SphereGeometry(0.022, 8, 6); // Slightly larger, fewer segments
+      const wireMaterial = new THREE.MeshBasicMaterial({ 
+        color: 0xffffff,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.5
+      });
+      
+      const wireframeSphere = new THREE.Mesh(wireGeometry, wireMaterial);
+      centerMarker.add(wireframeSphere);
       
       // Check visibility setting
       const showCenterCheckbox = document.getElementById('show-center');
       centerMarker.visible = showCenterCheckbox ? showCenterCheckbox.checked : true;
       
       scene.add(centerMarker);
-
-      // Also add a wireframe version for better visibility
-      const wireframe = new THREE.WireframeGeometry(geometry);
-      const line = new THREE.LineSegments(wireframe, new THREE.LineBasicMaterial({ color: 0xffffff }));
-      line.position.set(x, y, z);
-      centerMarker.add(line);
 
       debugLog(`Center marker created at (${x.toFixed(3)}, ${y.toFixed(3)}, ${z.toFixed(3)})`);
     }
