@@ -26,10 +26,12 @@ class Enhanced3DViewer(Node):
         # Store latest data with timestamps
         self._latest_2d_frame = None
         self._latest_pointcloud = None
+        self._latest_full_scene = None
         self._latest_metadata = None
         self._latest_center_point = None
         self._last_2d_time = 0
         self._last_3d_time = 0
+        self._last_full_scene_time = 0
         self._last_meta_time = 0
         self._last_center_time = 0
         self._lock = threading.Lock()
@@ -37,12 +39,14 @@ class Enhanced3DViewer(Node):
         # Counters for debugging
         self._2d_count = 0
         self._3d_count = 0
+        self._full_scene_count = 0
         self._meta_count = 0
         self._center_count = 0
 
         # Subscribers with debugging
         self.create_subscription(Image, '/yolov8_debug', self.image_callback, 10)
         self.create_subscription(PointCloud2, '/detected_objects_pointcloud', self.pointcloud_callback, 10)
+        self.create_subscription(PointCloud2, '/full_scene_pointcloud', self.full_scene_callback, 10)
         self.create_subscription(String, '/detection_metadata', self.metadata_callback, 10)
         self.create_subscription(PointStamped, '/detected_objects_3d', self.center_point_callback, 10)
 
@@ -60,6 +64,8 @@ class Enhanced3DViewer(Node):
                 f"(last: {now - self._last_2d_time:.1f}s ago), "
                 f"3D: {self._3d_count} msgs "
                 f"(last: {now - self._last_3d_time:.1f}s ago), "
+                f"FullScene: {self._full_scene_count} msgs "
+                f"(last: {now - self._last_full_scene_time:.1f}s ago), "
                 f"Meta: {self._meta_count} msgs "
                 f"(last: {now - self._last_meta_time:.1f}s ago), "
                 f"Center: {self._center_count} msgs "
@@ -93,6 +99,20 @@ class Enhanced3DViewer(Node):
                 self.get_logger().info(f"📡 Processed point cloud #{self._3d_count} with {points_data['num_points']} points")
         except Exception as e:
             self.get_logger().error(f"Failed to process point cloud: {e}")
+            traceback.print_exc()
+
+    def full_scene_callback(self, msg):
+        try:
+            self._full_scene_count += 1
+            # Convert PointCloud2 to JSON for web transmission
+            points_data = self.pointcloud2_to_json(msg)
+            with self._lock:
+                self._latest_full_scene = json.dumps(points_data).encode('utf-8')
+                self._last_full_scene_time = time.time()
+            if self._full_scene_count % 5 == 0:  # Log every 5th full scene
+                self.get_logger().info(f"🌍 Processed full scene #{self._full_scene_count} with {points_data['num_points']} points")
+        except Exception as e:
+            self.get_logger().error(f"Failed to process full scene: {e}")
             traceback.print_exc()
 
     def metadata_callback(self, msg):
@@ -218,6 +238,8 @@ class Enhanced3DViewer(Node):
                 return self._latest_2d_frame
             elif data_type == '3d':
                 return self._latest_pointcloud
+            elif data_type == 'full_scene':
+                return self._latest_full_scene
             elif data_type == 'metadata':
                 return self._latest_metadata
             elif data_type == 'center':
@@ -232,6 +254,8 @@ class Enhanced3DViewer(Node):
                 return self._latest_2d_frame is not None and (now - self._last_2d_time) < 10
             elif data_type == '3d':
                 return self._latest_pointcloud is not None and (now - self._last_3d_time) < 10
+            elif data_type == 'full_scene':
+                return self._latest_full_scene is not None and (now - self._last_full_scene_time) < 10
             elif data_type == 'metadata':
                 return self._latest_metadata is not None and (now - self._last_meta_time) < 10
             elif data_type == 'center':
@@ -259,12 +283,14 @@ async def stream_handler(websocket, path=None):
             data_type = '2d'
         elif path == '/3d':
             data_type = '3d'
+        elif path == '/full_scene':
+            data_type = 'full_scene'
         elif path == '/metadata':
             data_type = 'metadata'
         elif path == '/center':
             data_type = 'center'
         else:
-            await websocket.send("Invalid path. Use /2d, /3d, /metadata, or /center")
+            await websocket.send("Invalid path. Use /2d, /3d, /full_scene, /metadata, or /center")
             return
 
         # Send initial status
@@ -306,6 +332,7 @@ async def main_ws_server():
     print("Available endpoints:")
     print("  ws://localhost:8765/2d - 2D detection images")
     print("  ws://localhost:8765/3d - 3D point cloud data")
+    print("  ws://localhost:8765/full_scene - Full scene point cloud data")
     print("  ws://localhost:8765/metadata - Detection metadata")
     print("  ws://localhost:8765/center - 3D center point data")
     

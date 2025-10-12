@@ -79,6 +79,7 @@ class ObjectDetection3D(Node):
         # Publishers
         self.point_pub = self.create_publisher(PointStamped, 'detected_objects_3d', 10)
         self.pointcloud_pub = self.create_publisher(PointCloud2, 'detected_objects_pointcloud', 10)
+        self.full_scene_pub = self.create_publisher(PointCloud2, 'full_scene_pointcloud', 10)
         self.metadata_pub = self.create_publisher(String, 'detection_metadata', 10)
         self.debug_image_pub = self.create_publisher(Image, 'yolov8_debug', 10)
         
@@ -180,6 +181,94 @@ class ObjectDetection3D(Node):
 
         return points, colors, depth_crop, x1, y1
 
+    def create_full_scene_pointcloud(self, depth_image, color_image, fx, fy, cx, cy, 
+                                   downsample_factor=6, max_points=25000):
+        """Create a downsampled point cloud of the entire scene with proper filtering"""
+        try:
+            h, w = depth_image.shape
+            
+            # Create coordinate meshes for downsampling with some randomization to avoid grid artifacts
+            y_coords = np.arange(0, h, downsample_factor)
+            x_coords = np.arange(0, w, downsample_factor)
+            
+            # Add small random offsets to break up the grid pattern
+            y_offset = np.random.randint(-downsample_factor//3, downsample_factor//3 + 1, size=len(y_coords))
+            x_offset = np.random.randint(-downsample_factor//3, downsample_factor//3 + 1, size=len(x_coords))
+            
+            y_coords = np.clip(y_coords + y_offset, 0, h-1)
+            x_coords = np.clip(x_coords + x_offset, 0, w-1)
+            
+            xx, yy = np.meshgrid(x_coords, y_coords)
+            
+            # Flatten coordinates for easier processing
+            pixel_x = xx.flatten()
+            pixel_y = yy.flatten()
+            
+            # Get depth values at these coordinates
+            depth_values = depth_image[pixel_y, pixel_x].astype(np.float32)
+            
+            # Use the same depth filtering as the object point cloud
+            # More permissive range: 10cm to 8m, exclude exactly zero values
+            valid_mask = (depth_values > 100.0) & (depth_values < 8000.0)
+            
+            if not np.any(valid_mask):
+                self.get_logger().warn("No valid depth values found in full scene")
+                return np.empty((0,3)), np.empty((0,3))
+            
+            # Filter coordinates and depth values
+            valid_x = pixel_x[valid_mask]
+            valid_y = pixel_y[valid_mask]
+            valid_depth_mm = depth_values[valid_mask]
+            valid_depth_m = valid_depth_mm / 1000.0
+            
+            # Get corresponding color values
+            valid_colors = color_image[valid_y, valid_x]
+            
+            # Convert to 3D coordinates using the same math as object point clouds
+            X = (valid_x - cx) * valid_depth_m / fx
+            Y = (valid_y - cy) * valid_depth_m / fy
+            Z = valid_depth_m
+            
+            points = np.stack([X, Y, Z], axis=1)
+            
+            # Convert BGR to RGB and ensure proper range [0-255]
+            colors = np.stack([valid_colors[:,2], valid_colors[:,1], valid_colors[:,0]], axis=1)
+            colors = np.clip(colors, 0, 255).astype(np.uint8)
+            
+            # Debug: Check for problematic color values
+            black_points = np.sum(np.all(colors == 0, axis=1))
+            if black_points > 0:
+                self.get_logger().info(f"🎨 Full scene has {black_points}/{len(colors)} black points (may appear green)")
+            
+            # Filter out completely black points (they're usually invalid depth pixels)
+            non_black_mask = ~np.all(colors == 0, axis=1)
+            if np.sum(non_black_mask) < len(colors):
+                self.get_logger().info(f"🧹 Filtering out {len(colors) - np.sum(non_black_mask)} black points")
+                points = points[non_black_mask]
+                colors = colors[non_black_mask]
+            
+            # Subsample if we have too many points
+            if len(points) > max_points:
+                idx = np.random.choice(len(points), max_points, replace=False)
+                points = points[idx]
+                colors = colors[idx]
+            
+            # Debug: Check for problematic values
+            x_range = f"X[{X.min():.2f}, {X.max():.2f}]"
+            y_range = f"Y[{Y.min():.2f}, {Y.max():.2f}]"
+            z_range = f"Z[{Z.min():.2f}, {Z.max():.2f}]"
+            
+            self.get_logger().info(f"🌍 Generated full scene: {len(points)} points, "
+                                 f"depth range: {valid_depth_m.min():.2f}-{valid_depth_m.max():.2f}m, "
+                                 f"coords: {x_range} {y_range} {z_range}")
+            
+            return points, colors
+            
+        except Exception as e:
+            self.get_logger().error(f"Error creating full scene point cloud: {e}")
+            import traceback
+            traceback.print_exc()
+            return np.empty((0,3)), np.empty((0,3))
 
     def create_pointcloud2_msg(self, points, colors, header):
         if len(points) == 0:
@@ -343,6 +432,17 @@ class ObjectDetection3D(Node):
                     f'3D: ({world_x:.3f}, {world_y:.3f}, {world_z:.3f})m '
                     f'Points: {len(points)}'
                 )
+            
+            # Generate and publish full scene point cloud
+            full_scene_points, full_scene_colors = self.create_full_scene_pointcloud(
+                depth_image, color_image, fx, fy, cx, cy, 
+                downsample_factor=4, max_points=50000
+            )
+            
+            if len(full_scene_points) > 0:
+                full_scene_msg = self.create_pointcloud2_msg(full_scene_points, full_scene_colors, depth_msg.header)
+                if full_scene_msg:
+                    self.full_scene_pub.publish(full_scene_msg)
             
             # Publish debug image
             debug_msg = self.bridge.cv2_to_imgmsg(color_image, encoding='bgr8')
