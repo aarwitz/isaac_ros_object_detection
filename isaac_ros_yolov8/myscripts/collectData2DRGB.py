@@ -10,7 +10,7 @@ class ImageSaver(Node):
         super().__init__('image_saver')
         self.subscription = self.create_subscription(
             Image,
-            '/camera/color/image_raw',
+            '/image_rect',  # Changed from '/camera/color/image_raw' to the active topic
             self.listener_callback,
             10)
         self.bridge = CvBridge()
@@ -47,7 +47,7 @@ class ImageSaver(Node):
         current_time = time.time()
 
         # Save image every 1 second
-        if current_time - self.last_save_time >= 1.0:
+        if current_time - self.last_save_time >= 3.0:
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             filename = os.path.join(self.save_dir, f'image_{self.counter:04d}.jpg')
             cv2.imwrite(filename, cv_image)
