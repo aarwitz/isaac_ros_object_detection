@@ -197,3 +197,5 @@ build/isaac_ros_yolov8/ament_cmake_python/isaac_ros_yolov8/isaac_ros_yolov8.egg-
 build/isaac_ros_yolov8/ament_cmake_python/isaac_ros_yolov8/isaac_ros_yolov8.egg-info/SOURCES.txt
 build/isaac_ros_yolov8/ament_cmake_python/isaac_ros_yolov8/isaac_ros_yolov8.egg-info/top_level.txt
 build/isaac_ros_yolov8/ament_cmake_uninstall_target/ament_cmake_uninstall_target.cmake
+myscript/captured_images/*
+~/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/captured_images/*
