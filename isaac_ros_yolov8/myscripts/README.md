@@ -80,6 +80,30 @@ My model for socks on white carpter
 ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono_rect_depth,yolov8 model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.onnx engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks.plan confidence_threshold:=0.83
 ```
 
+Or to get a better point cloud with D455-optimized settings (stereo camera filters)
+```bash
+ros2 launch isaac_ros_examples isaac_ros_examples.launch.py \
+  launch_fragments:=realsense_mono_rect_depth,yolov8 \
+  model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks2.onnx \
+  engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks2.plan \
+  confidence_threshold:=0.6 \
+  stereo_module.visual_preset:=3 \
+  stereo_module.enable_auto_exposure:=true \
+  stereo_module.emitter_enabled:=1 \
+  decimation_filter.enable:=true \
+  decimation_filter.filter_magnitude:=2 \
+  spatial_filter.enable:=true \
+  spatial_filter.filter_magnitude:=2 \
+  spatial_filter.filter_smooth_alpha:=0.5 \
+  spatial_filter.filter_smooth_delta:=20 \
+  spatial_filter.hole_filling:=2 \
+  temporal_filter.enable:=true \
+  temporal_filter.filter_smooth_alpha:=0.4 \
+  temporal_filter.filter_smooth_delta:=20 \
+  depth_module.profile:=1280x720x30 \
+  depth_module.preset:=3
+```
+
 Open up container in a few other terminals with
 ```bash
 docker exec -it isaac_ros_dev-aarch64-container bash
