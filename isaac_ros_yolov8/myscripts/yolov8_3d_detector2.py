@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""
+Minimal YOLOv8 -> 3D object detector / visualizer for ROS2 (Humble)
+- Subscribes to:
+    /detections_output           (vision_msgs/Detection2DArray)
+    /aligned_depth_to_color/image_raw   (sensor_msgs/Image)        <-- depth aligned to color
+    /image_rect                  (sensor_msgs/Image)          <-- color (bgr8)
+    /aligned_depth_to_color/camera_info (sensor_msgs/CameraInfo)
+    /camera_info_rect            (sensor_msgs/CameraInfo)     <-- YOLO image size
+- Publishes:
+    /yolov8_debug                (sensor_msgs/Image)   overlay image (bgr8 JPEG-friendly)
+    /detected_objects_pointcloud (sensor_msgs/PointCloud2)
+    /detected_objects_3d        (geometry_msgs/PointStamped)
+Simple, robust centroid-from-pointcloud approach.
+"""
+
+import rclpy
+from rclpy.node import Node
+from cv_bridge import CvBridge
+import numpy as np
+import cv2
+import struct
+import time
+import json
+
+from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
+from geometry_msgs.msg import PointStamped
+from vision_msgs.msg import Detection2DArray
+import message_filters
+from message_filters import ApproximateTimeSynchronizer
+
+# Small helpers
+def normalize_bbox_from_detection(bbox_x, bbox_y, bbox_w, bbox_h, det_w, det_h):
+    """Return (cx, cy, w, h) in detection image pixels.
+    Handles both normalized (0..1) and absolute coords (>1)."""
+    if bbox_x <= 1.0 and bbox_y <= 1.0 and bbox_w <= 1.0 and bbox_h <= 1.0:
+        cx = float(bbox_x) * det_w
+        cy = float(bbox_y) * det_h
+        w = float(bbox_w) * det_w
+        h = float(bbox_h) * det_h
+    else:
+        cx = float(bbox_x)
+        cy = float(bbox_y)
+        w = float(bbox_w)
+        h = float(bbox_h)
+    return cx, cy, w, h
+
+def pointcloud2_from_numpy(points_xyz, colors_rgb, header):
+    """Simple PointCloud2 creation. points_xyz: (N,3) float32, colors_rgb: (N,3) uint8"""
+    if points_xyz is None or len(points_xyz) == 0:
+        return None
+
+    pts = points_xyz.astype(np.float32)
+    cols = colors_rgb.astype(np.uint8)
+
+    # fields: x,y,z (float32) r,g,b (uint8) + pad 1 byte -> 16 byte point step
+    fields = [
+        PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name='r', offset=12, datatype=PointField.UINT8, count=1),
+        PointField(name='g', offset=13, datatype=PointField.UINT8, count=1),
+        PointField(name='b', offset=14, datatype=PointField.UINT8, count=1),
+    ]
+
+    point_step = 16
+    row_step = point_step * pts.shape[0]
+
+    buff = bytearray()
+    pad = b'\x00'
+    for (x, y, z), (r, g, b) in zip(pts, cols):
+        buff += struct.pack('<fff', float(x), float(y), float(z))
+        buff += bytes((int(r), int(g), int(b))) + pad
+
+    pc2 = PointCloud2()
+    pc2.header = header
+    pc2.height = 1
+    pc2.width = pts.shape[0]
+    pc2.fields = fields
+    pc2.is_bigendian = False
+    pc2.point_step = point_step
+    pc2.row_step = row_step
+    pc2.is_dense = True
+    pc2.data = bytes(buff)
+    return pc2
+
+class SimpleYoloV83D(Node):
+    def __init__(self):
+        super().__init__('yolov8_3d_detector_simple')
+        self.br = CvBridge()
+
+        # Topics - change if your launch uses different names
+        self.detections_topic = '/detections_output'
+        self.depth_topic = '/aligned_depth_to_color/image_raw'
+        self.color_topic = '/image_rect'
+        self.depth_info_topic = '/aligned_depth_to_color/camera_info'
+        self.yolo_info_topic = '/yolov8_encoder/resize/camera_info'
+
+        # Publishers
+        self.debug_img_pub = self.create_publisher(Image, '/yolov8_debug', 5)
+        self.obj_pc_pub = self.create_publisher(PointCloud2, '/detected_objects_pointcloud', 5)
+        self.center_pub = self.create_publisher(PointStamped, '/detected_objects_3d', 5)
+
+        # Subscribers with approximate sync
+        self.detection_sub = message_filters.Subscriber(self, Detection2DArray, self.detections_topic)
+        self.depth_sub = message_filters.Subscriber(self, Image, self.depth_topic)
+        self.color_sub = message_filters.Subscriber(self, Image, self.color_topic)
+        self.depth_info_sub = message_filters.Subscriber(self, CameraInfo, self.depth_info_topic)
+        self.yolo_info_sub = message_filters.Subscriber(self, CameraInfo, self.yolo_info_topic)
+
+        self.sync = ApproximateTimeSynchronizer(
+            [self.detection_sub, self.depth_sub, self.color_sub, self.depth_info_sub, self.yolo_info_sub],
+            queue_size=10,
+            slop=0.08
+        )
+        self.sync.registerCallback(self.callback_sync)
+
+        # Simple class list for label drawing (adjust to your model)
+        self.class_names = ['sock']
+
+        # Basic thresholds
+        self.min_depth_mm = 100      # 10 cm
+        self.max_depth_mm = 5000     # 5 m
+        self.get_logger().info("Simple YOLOv8 3D detector started")
+
+    def callback_sync(self, detections_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
+        t0 = time.time()
+        try:
+            color = self.br.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
+            depth = self.br.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')  # could be uint16 or float32
+        except Exception as e:
+            self.get_logger().error(f"Image conversion failed: {e}")
+            return
+
+        # Sanity logs (helpful during debugging)
+        self.get_logger().debug(f"depth.shape={getattr(depth,'shape',None)}, dtype={getattr(depth,'dtype',None)}; color.shape={color.shape}")
+
+        # if (color.shape[1], color.shape[0]) != (depth.shape[1], depth.shape[0]):
+        #     color = cv2.resize(color, (depth.shape[1], depth.shape[0]), interpolation=cv2.INTER_LINEAR)
+        #     self.get_logger().info(f"Resized color {color.shape[1]}x{color.shape[0]} -> depth {depth.shape[1]}x{depth.shape[0]}")
+
+        # Intrinsics from aligned depth camera_info
+        fx = depth_info_msg.k[0]
+        fy = depth_info_msg.k[4]
+        cx = depth_info_msg.k[2]
+        cy = depth_info_msg.k[5]
+
+        # Sizes
+        det_w = int(yolo_info_msg.width)
+        det_h = int(yolo_info_msg.height)
+        color_h, color_w = color.shape[:2]
+
+        # Make copy for overlay
+        overlay = color.copy()
+        cv2.rectangle(overlay, (0,0), (overlay.shape[1]-1, overlay.shape[0]-1), (0,0,255), 2)
+        cv2.putText(overlay, f"{color_w}x{color_h}", (8,24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,255), 2)
+
+        # Loop detections
+        processed = 0
+        for i, det in enumerate(detections_msg.detections):
+            if not det.results:
+                continue
+            res = det.results[0]
+            score = float(res.hypothesis.score)
+            cls_id = int(res.hypothesis.class_id)
+            label = self.class_names[cls_id] if cls_id < len(self.class_names) else f"class{cls_id}"
+
+            # bounding box in detection image coords (may be normalized)
+            bbox_cx, bbox_cy, bbox_w, bbox_h = normalize_bbox_from_detection(
+                det.bbox.center.position.x,
+                det.bbox.center.position.y,
+                det.bbox.size_x,
+                det.bbox.size_y,
+                det_w, det_h
+            )
+
+            # scale bbox to color image pixels
+            scale_x = color_w / float(det_w)
+            scale_y = color_h / float(det_h)
+            pb_cx = bbox_cx * scale_x
+            pb_cy = bbox_cy * scale_y
+            pb_w  = bbox_w  * scale_x
+            pb_h  = bbox_h  * scale_y
+
+            # bbox pixel coords
+            x1 = int(round(pb_cx - pb_w/2.0)); y1 = int(round(pb_cy - pb_h/2.0))
+            x2 = int(round(pb_cx + pb_w/2.0)); y2 = int(round(pb_cy + pb_h/2.0))
+            x1 = max(0, min(x1, color_w-1)); x2 = max(0, min(x2, color_w-1))
+            y1 = max(0, min(y1, color_h-1)); y2 = max(0, min(y2, color_h-1))
+
+            # draw bbox & label
+            cv2.rectangle(overlay, (x1,y1), (x2,y2), (0,255,0), 2)
+            cv2.putText(overlay, f"{label} {score:.2f}", (x1, max(12,y1-6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
+
+            # create object point cloud from bbox
+            points, colors = self.create_object_pointcloud(depth, color, x1, y1, x2, y2, fx, fy, cx, cy)
+
+            if points is None or len(points) == 0:
+                self.get_logger().info(f"Det {i}: no valid points in bbox")
+                continue
+
+            # robust center: median of inlier points (X,Y,Z)
+            centroid = np.median(points, axis=0)  # [X, Y, Z] in meters
+            # publish center point
+            center_msg = PointStamped()
+            center_msg.header = detections_msg.header
+            center_msg.point.x = float(centroid[0])
+            center_msg.point.y = float(centroid[1])
+            center_msg.point.z = float(centroid[2])
+            self.center_pub.publish(center_msg)
+
+            # project centroid back to image for drawing
+            try:
+                proj_u = int(round((centroid[0] * fx) / centroid[2] + cx))
+                proj_v = int(round((centroid[1] * fy) / centroid[2] + cy))
+                cv2.drawMarker(overlay, (proj_u, proj_v), (0,0,255), markerType=cv2.MARKER_TILTED_CROSS, markerSize=12, thickness=2)
+                cv2.putText(overlay, f"{centroid[2]:.2f}m", (proj_u+6, proj_v-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
+            except Exception:
+                pass
+
+            # publish object point cloud message
+            pc2 = pointcloud2_from_numpy(points, colors, detections_msg.header)
+            if pc2 is not None:
+                self.obj_pc_pub.publish(pc2)
+
+            processed += 1
+
+        # publish overlay image
+        try:
+            img_msg = self.br.cv2_to_imgmsg(overlay, encoding='bgr8')
+            img_msg.header = detections_msg.header
+            self.debug_img_pub.publish(img_msg)
+        except Exception as e:
+            self.get_logger().warn(f"Failed to publish overlay image: {e}")
+
+        elapsed = time.time() - t0
+        self.get_logger().info(f"Processed {processed} detections, elapsed {elapsed*1000:.1f} ms")
+
+    def create_object_pointcloud(self, depth_img, color_img, x1, y1, x2, y2, fx, fy, cx, cy):
+        """Crop bbox, filter depth, return Nx3 points (meters) and Nx3 uint8 RGB colors."""
+        # Safe crop
+        h, w = depth_img.shape
+        x1c = max(0, min(w-1, x1)); x2c = max(0, min(w-1, x2))
+        y1c = max(0, min(h-1, y1)); y2c = max(0, min(h-1, y2))
+        if x2c <= x1c or y2c <= y1c:
+            return None, None
+
+        depth_crop = depth_img[y1c:y2c+1, x1c:x2c+1]
+        color_crop = color_img[y1c:y2c+1, x1c:x2c+1]
+
+        if depth_crop.size == 0:
+            return None, None
+
+        # handle depth dtype (uint16 in mm OR float32 in meters)
+        is_uint16 = np.issubdtype(depth_crop.dtype, np.integer)
+        if is_uint16:
+            depth_mm = depth_crop.astype(np.float32)
+        else:
+            # assume float32 in meters => convert to mm for thresholds then to meters later
+            depth_mm = (depth_crop.astype(np.float32) * 1000.0)
+
+        # Valid depth mask
+        mask = (depth_mm > self.min_depth_mm) & (depth_mm < self.max_depth_mm)
+
+        if not np.any(mask):
+            return None, None
+
+        # Use central region to compute robust median depth to avoid rim pixels
+        H, W = depth_mm.shape
+        cx0 = int(0.3 * W); cx1 = int(0.7 * W)
+        cy0 = int(0.3 * H); cy1 = int(0.7 * H)
+        center_patch = depth_mm[cy0:cy1, cx0:cx1]
+        valid_center = center_patch[(center_patch > self.min_depth_mm) & (center_patch < self.max_depth_mm)]
+        if valid_center.size == 0:
+            # fallback to all valid
+            z_med_mm = float(np.median(depth_mm[mask]))
+        else:
+            z_med_mm = float(np.median(valid_center))
+
+        # Keep points within +/- 50 mm of median (tunable)
+        band_mm = 50.0
+        inlier_mask = mask & (np.abs(depth_mm - z_med_mm) <= band_mm)
+
+        if not np.any(inlier_mask):
+            # loosen band if nothing remains
+            inlier_mask = mask
+
+        v_idx, u_idx = np.nonzero(inlier_mask)
+        if v_idx.size == 0:
+            return None, None
+
+        depth_vals_m = depth_mm[v_idx, u_idx] / 1000.0  # meters
+
+        # compute pixel coords in full image (not crop)
+        pixel_x = x1c + u_idx
+        pixel_y = y1c + v_idx
+
+        X = (pixel_x - cx) * depth_vals_m / fx
+        Y = (pixel_y - cy) * depth_vals_m / fy
+        Z = depth_vals_m
+
+        points = np.stack([X, Y, Z], axis=1)
+
+        # grab colors (BGR -> RGB)
+        rgb = color_crop[v_idx, u_idx]  # BGR
+        colors = np.stack([rgb[:,2], rgb[:,1], rgb[:,0]], axis=1).astype(np.uint8)
+
+        return points, colors
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = SimpleYoloV83D()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info("Shutting down")
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == "__main__":
+    main()
