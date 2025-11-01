@@ -86,7 +86,7 @@ ros2 launch isaac_ros_examples isaac_ros_examples.launch.py \
   launch_fragments:=realsense_mono_rect_depth,yolov8 \
   model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks2.onnx \
   engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks2.plan \
-  confidence_threshold:=0.6 \
+  confidence_threshold:=0.85 \
   stereo_module.visual_preset:=3 \
   stereo_module.enable_auto_exposure:=true \
   stereo_module.emitter_enabled:=1 \
