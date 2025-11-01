@@ -116,7 +116,7 @@ ros2 run isaac_ros_yolov8 isaac_ros_yolov8_visualizer.py
 
 In another terminal in same container run my 3d detector:
 ```bash
-python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_detector.py
+python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_detector2.py
 ```
 
 In another terminal in same container run my webviewer script:
