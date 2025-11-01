@@ -185,9 +185,22 @@ class Enhanced3DViewer(Node):
             
             # Extract points
             point_step = pc_msg.point_step
-            max_points = min(pc_msg.width, 20000)  # Increased limit for better density
             
-            for i in range(max_points):
+            # Compute total points
+            total_points = int(pc_msg.width) * int(pc_msg.height or 1)
+            max_points = min(total_points, 20000)  # limit to 20k for web
+
+            # Choose indices to sample uniformly (avoid bias)
+            if total_points <= max_points:
+                indices = list(range(total_points))
+            else:
+                # sample without replacement
+                # fast approach: numpy.choice (may allocate) or strided sampling
+                # here do uniform striding for speed
+                stride = max(1, total_points // max_points)
+                indices = list(range(0, total_points, stride))[:max_points]
+            
+            for i in indices:
                 offset = i * point_step
                 
                 try:
