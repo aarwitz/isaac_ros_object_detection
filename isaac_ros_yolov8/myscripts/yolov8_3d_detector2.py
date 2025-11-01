@@ -84,9 +84,17 @@ def pointcloud2_from_numpy(points_xyz, colors_rgb, header):
     pc2.data = bytes(buff)
     return pc2
 
+
+"""
+- A node is like a process that topics can be run on
+- A topic is a stream that subscribers and publishers can listen or publish to
+- message_filters is a ros utility library that provides wrappers and combiners 
+"""
+
 class SimpleYoloV83D(Node):
     def __init__(self):
-        super().__init__('yolov8_3d_detector_simple')
+        super().__init__('yolov8_3d_detector_simple') # Creates an rclpy Node object registered with the ROS 2 graph under the name "yolov8_3d_detector_simple"
+        # an rclpy Node object is the main access point to communications with the ROS 2 system with python.
         self.br = CvBridge()
 
         # Topics - change if your launch uses different names
@@ -97,7 +105,7 @@ class SimpleYoloV83D(Node):
         self.yolo_info_topic = '/yolov8_encoder/resize/camera_info'
 
         # Publishers
-        self.debug_img_pub = self.create_publisher(Image, '/yolov8_debug', 5)
+        self.debug_img_pub = self.create_publisher(Image, '/yolov8_debug', 5) # buffer size of 5 messages so subscribers running late are less likely to miss any published messages
         self.obj_pc_pub = self.create_publisher(PointCloud2, '/detected_objects_pointcloud', 5)
         self.center_pub = self.create_publisher(PointStamped, '/detected_objects_3d', 5)
 
@@ -108,12 +116,18 @@ class SimpleYoloV83D(Node):
         self.depth_info_sub = message_filters.Subscriber(self, CameraInfo, self.depth_info_topic)
         self.yolo_info_sub = message_filters.Subscriber(self, CameraInfo, self.yolo_info_topic)
 
+        # ApproximateTimeSynchronizer is part of message_filters 
+        # it is a synchronizer/filter that buffers messages from the message_filters.Subscriber objects you pass it
+        # and looks for sets whose header.stamp values are within the configured slop.
         self.sync = ApproximateTimeSynchronizer(
             [self.detection_sub, self.depth_sub, self.color_sub, self.depth_info_sub, self.yolo_info_sub],
             queue_size=10,
             slop=0.08
         )
         self.sync.registerCallback(self.callback_sync)
+        # registerCallback(your_fn) simply tells that synchronizer which function to call when it finds a matched set.
+        # The message_filters.Subscribers receive messages from the ROS middleware, forward them into the synchronizer’s buffers,
+        # and the synchronizer invokes your registered callback with the matched messages.
 
         # Simple class list for label drawing (adjust to your model)
         self.class_names = ['sock']
@@ -128,12 +142,29 @@ class SimpleYoloV83D(Node):
         try:
             color = self.br.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
             depth = self.br.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')  # could be uint16 or float32
+            # passthrough tells CvBridge to not change the image encoding — return the raw pixel buffer as a NumPy array
+            # with whatever dtype/shape the sensor_msgs/Image actually contains. You then have to inspect the array
+            # (or depth_msg.encoding) and handle units/dtypes yourself.
+            #
+            # TODO: verify depth encoding
+            # print("encoding:", depth_msg.encoding, "dtype:", depth.dtype, "min/max:", np.nanmin(depth), np.nanmax(depth))
+            # if np.issubdtype(depth.dtype, np.integer):           # typically 16UC1 -> mm
+            #     depth_mm = depth.astype(np.float32)              # already in mm if driver uses mm
+            # elif np.issubdtype(depth.dtype, np.floating):        # typically 32FC1 -> meters
+            #     depth_mm = (depth.astype(np.float32) * 1000.0)   # convert meters -> mm
+            # else:
+            #     raise RuntimeError(f"Unexpected depth dtype: {depth.dtype}")
+
         except Exception as e:
             self.get_logger().error(f"Image conversion failed: {e}")
             return
 
+        # put this in callback_sync after you convert color
+        self.get_logger().info(f"COLOR shape (w x h): {color.shape[1]} x {color.shape[0]}; depth shape: {depth.shape}")
+
+
         # Sanity logs (helpful during debugging)
-        self.get_logger().debug(f"depth.shape={getattr(depth,'shape',None)}, dtype={getattr(depth,'dtype',None)}; color.shape={color.shape}")
+        # self.get_logger().debug(f"depth.shape={getattr(depth,'shape',None)}, dtype={getattr(depth,'dtype',None)}; color.shape={color.shape}")
 
         # if (color.shape[1], color.shape[0]) != (depth.shape[1], depth.shape[0]):
         #     color = cv2.resize(color, (depth.shape[1], depth.shape[0]), interpolation=cv2.INTER_LINEAR)
@@ -144,23 +175,26 @@ class SimpleYoloV83D(Node):
         fy = depth_info_msg.k[4]
         cx = depth_info_msg.k[2]
         cy = depth_info_msg.k[5]
+        # fx, fy = focal lengths expressed in pixels. 
+        # cx, cy = principal point (optical center) in pixel coordinates.
 
-        # Sizes
+        # Width and height of image used for detection (YOLO input size)
         det_w = int(yolo_info_msg.width)
         det_h = int(yolo_info_msg.height)
+        # Shape TODO what is this why is it not 640x640, is it just because we want to display higher res?
         color_h, color_w = color.shape[:2]
 
         # Make copy for overlay
         overlay = color.copy()
-        cv2.rectangle(overlay, (0,0), (overlay.shape[1]-1, overlay.shape[0]-1), (0,0,255), 2)
-        cv2.putText(overlay, f"{color_w}x{color_h}", (8,24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,255), 2)
+        # cv2.rectangle(overlay, (0,0), (overlay.shape[1]-1, overlay.shape[0]-1), (0,0,255), 2)
+        # cv2.putText(overlay, f"{color_w}x{color_h}", (8,24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,255), 2)
 
         # Loop detections
         processed = 0
         for i, det in enumerate(detections_msg.detections):
             if not det.results:
                 continue
-            res = det.results[0]
+            res = det.results[0] # The results array contains multiple class predictions for the same bounding box. Take the first one.
             score = float(res.hypothesis.score)
             cls_id = int(res.hypothesis.class_id)
             label = self.class_names[cls_id] if cls_id < len(self.class_names) else f"class{cls_id}"
@@ -175,12 +209,35 @@ class SimpleYoloV83D(Node):
             )
 
             # scale bbox to color image pixels
-            scale_x = color_w / float(det_w)
-            scale_y = color_h / float(det_h)
-            pb_cx = bbox_cx * scale_x
-            pb_cy = bbox_cy * scale_y
-            pb_w  = bbox_w  * scale_x
-            pb_h  = bbox_h  * scale_y
+            # scale_x = color_w / float(det_w)
+            # scale_y = color_h / float(det_h)
+            # pb_cx = bbox_cx * scale_x
+            # pb_cy = bbox_cy * scale_y
+            # pb_w  = bbox_w  * scale_x
+            # pb_h  = bbox_h  * scale_y
+
+
+            # Use intrinsics to compute uniform scale + pad (invert letterbox)
+            det_fx = float(yolo_info_msg.k[0])
+            det_fy = float(yolo_info_msg.k[4])
+            col_fx = float(depth_info_msg.k[0])   # aligned depth/camera intrinsics (color)
+            col_fy = float(depth_info_msg.k[4])
+
+            # Prefer fx-based scale (most robust if square pixels)
+            s_x = det_fx / (col_fx + 1e-12)
+            s_y = det_fy / (col_fy + 1e-12)
+            # if encoder preserved aspect ratio, s_x ≈ s_y; use the average or one of them
+            s = (s_x + s_y) / 2.0
+
+            # compute pad in detector pixels (how many pixels were added to make det_w/det_h)
+            pad_x = (det_w - s * color_w) / 2.0
+            pad_y = (det_h - s * color_h) / 2.0
+
+            # now map detector pixels back into color pixels by removing pad then dividing by scale
+            pb_cx = (bbox_cx - pad_x) / s
+            pb_cy = (bbox_cy - pad_y) / s
+            pb_w  = bbox_w  / s
+            pb_h  = bbox_h  / s
 
             # bbox pixel coords
             x1 = int(round(pb_cx - pb_w/2.0)); y1 = int(round(pb_cy - pb_h/2.0))
@@ -309,10 +366,12 @@ class SimpleYoloV83D(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = SimpleYoloV83D()
+    rclpy.init(args=args) # initializes the Python ROS 2 client library (rclpy) so we can create Node objects
+    node = SimpleYoloV83D() # init our node
     try:
-        rclpy.spin(node)
+        rclpy.spin(node) # Starts the ROS executor loop for that node and blocks the current thread, 
+        # processing incoming ROS work (subscription callbacks, service requests, timers, action events, etc.) 
+        # until the process is shut down.
     except KeyboardInterrupt:
         node.get_logger().info("Shutting down")
     finally:

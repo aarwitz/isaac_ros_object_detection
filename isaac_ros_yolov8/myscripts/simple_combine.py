@@ -13,9 +13,9 @@ def combine_core_scripts():
     # Define only the core script files
     script_files = [
         {
-            'name': 'yolov8_3d_grasp_detector.py',
+            'name': 'yolov8_3d_detector2.py',
             'description': 'GGCNN detection + grasp',
-            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_grasp_detector.py'
+            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_detector2.py'
         },
         {
             'name': 'web_viewer_server_3d.py', 
