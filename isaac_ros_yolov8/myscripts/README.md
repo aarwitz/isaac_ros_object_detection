@@ -16,20 +16,22 @@ Run the development script (example):
 
 If that doesn't work or can't exist GPU or camera in container, add options:
 ```bash
-docker run -it --rm --privileged --network host --ipc=host \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
+docker run -d --rm --privileged --network host --ipc=host \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   -v "$HOME/.Xauthority":/home/admin/.Xauthority:rw \
   -e DISPLAY \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=all \
   -e ROS_DOMAIN_ID -e USER -e ISAAC_ROS_WS=/workspaces/isaac_ros-dev \
   -e HOST_USER_UID=$(id -u) -e HOST_USER_GID=$(id -g) \
-  --pid=host -v /dev/input:/dev/input \
-  -v /dev/bus/usb:/dev/bus/usb \
-  -v /home/taylor/workspaces/isaac_ros-dev:/workspaces/isaac_ros-dev \
-  --name isaac_ros_dev-aarch64-container \
+  --pid=host \
+  -v /dev/input:/dev/input:rw \
+  -v /dev/bus/usb:/dev/bus/usb:rw \
+  -v /home/taylor/workspaces/isaac_ros-dev:/workspaces/isaac_ros-dev:cached \
+  --name isaac_ros_dev_aarch64_local \
   --gpus all \
-  isaac_ros_dev-aarch64 /bin/bash
+  isaac_ros_dev-aarch64 \
+  /bin/bash -c "sleep infinity"
 ```
 
 Add the ROS apt key if needed:
