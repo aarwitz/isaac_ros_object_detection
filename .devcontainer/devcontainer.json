@@ -1,0 +1,78 @@
+{
+    "name": "Isaac ROS Object Detection Dev Container",
+    "image": "isaac_ros_dev-aarch64",
+    
+    // Configure VS Code extensions
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.debugpy", 
+                "ms-vscode.cpptools",
+                "ms-ament.vscode-ament-task-provider",
+                "ms-vscode.cmake-tools",
+                "redhat.vscode-xml",
+                "redhat.vscode-yaml",
+                "twxs.cmake"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/bin/python3",
+                "python.terminal.activateEnvironment": false,
+                "terminal.integrated.shell.linux": "/bin/bash"
+            }
+        }
+    },
+
+    // Container configuration matching your docker run command
+    "runArgs": [
+        "--privileged",
+        "--network=host", 
+        "--ipc=host",
+        "--pid=host",
+        "--gpus=all"
+    ],
+
+    // Environment variables
+    "containerEnv": {
+        "DISPLAY": "${localEnv:DISPLAY}",
+        "NVIDIA_VISIBLE_DEVICES": "all",
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "ROS_DOMAIN_ID": "${localEnv:ROS_DOMAIN_ID}",
+        "ISAAC_ROS_WS": "/workspaces/isaac_ros-dev",
+        "HOST_USER_UID": "${localEnv:UID}",
+        "HOST_USER_GID": "${localEnv:GID}"
+    },
+
+    // Mount points matching your setup
+    "mounts": [
+        "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind",
+        "source=${localEnv:HOME}/.Xauthority,target=/home/admin/.Xauthority,type=bind",
+        "source=/dev/input,target=/dev/input,type=bind",
+        "source=/dev/bus/usb,target=/dev/bus/usb,type=bind"
+    ],
+
+    // Workspace folder inside container
+    "workspaceFolder": "/workspaces/isaac_ros-dev",
+    "workspaceMount": "source=${localWorkspaceFolder}/../..,target=/workspaces/isaac_ros-dev,type=bind,consistency=cached",
+
+    // Post-create command to set up the environment
+    "postCreateCommand": "bash -c 'cd /workspaces/isaac_ros-dev && source /opt/ros/humble/setup.bash && ./src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/install_isaac_deps.sh'",
+
+    // Keep container running
+    "shutdownAction": "stopContainer",
+    
+    // User configuration
+    "remoteUser": "admin",
+    
+    // Forward ports if needed
+    "forwardPorts": [],
+    
+    // Features
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": true,
+            "configureZshAsDefaultShell": true,
+            "installOhMyZsh": true
+        }
+    }
+}

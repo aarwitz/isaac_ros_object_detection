@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug YOLOv8 3D Detector",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_detector2.py",
+            "console": "integratedTerminal",
+            "cwd": "/workspaces/isaac_ros-dev",
+            "env": {
+                "PYTHONPATH": "/workspaces/isaac_ros-dev/install/lib/python3.8/site-packages:/opt/ros/humble/lib/python3.8/site-packages",
+                "ROS_DOMAIN_ID": "0",
+                "ISAAC_ROS_WS": "/workspaces/isaac_ros-dev"
+            },
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "preLaunchTask": "Source ROS Environment"
+        }
+    ]
+}
