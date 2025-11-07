@@ -30,21 +30,6 @@ import message_filters
 from message_filters import ApproximateTimeSynchronizer
 
 # Small helpers
-def normalize_bbox_from_detection(bbox_x, bbox_y, bbox_w, bbox_h, det_w, det_h):
-    """Return (cx, cy, w, h) in detection image pixels.
-    Handles both normalized (0..1) and absolute coords (>1)."""
-    if bbox_x <= 1.0 and bbox_y <= 1.0 and bbox_w <= 1.0 and bbox_h <= 1.0:
-        cx = float(bbox_x) * det_w
-        cy = float(bbox_y) * det_h
-        w = float(bbox_w) * det_w
-        h = float(bbox_h) * det_h
-    else:
-        cx = float(bbox_x)
-        cy = float(bbox_y)
-        w = float(bbox_w)
-        h = float(bbox_h)
-    return cx, cy, w, h
-
 def pointcloud2_from_numpy(points_xyz, colors_rgb, header):
     """Simple PointCloud2 creation. points_xyz: (N,3) float32, colors_rgb: (N,3) uint8"""
     if points_xyz is None or len(points_xyz) == 0:
@@ -302,7 +287,6 @@ class SimpleYoloV83D(Node):
         colors = np.stack([rgb[:,2], rgb[:,1], rgb[:,0]], axis=1).astype(np.uint8)
 
         return points, colors
-
 
 def main(args=None):
     rclpy.init(args=args) # initializes the Python ROS 2 client library (rclpy) so we can create Node objects
