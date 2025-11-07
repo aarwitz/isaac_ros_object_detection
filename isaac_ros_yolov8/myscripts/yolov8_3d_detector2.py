@@ -30,6 +30,21 @@ import message_filters
 from message_filters import ApproximateTimeSynchronizer
 
 # Small helpers
+def normalize_bbox_from_detection(bbox_x, bbox_y, bbox_w, bbox_h, det_w, det_h):
+    """Return (cx, cy, w, h) in detection image pixels.
+    Handles both normalized (0..1) and absolute coords (>1)."""
+    if bbox_x <= 1.0 and bbox_y <= 1.0 and bbox_w <= 1.0 and bbox_h <= 1.0:
+        cx = float(bbox_x) * det_w
+        cy = float(bbox_y) * det_h
+        w = float(bbox_w) * det_w
+        h = float(bbox_h) * det_h
+    else:
+        cx = float(bbox_x)
+        cy = float(bbox_y)
+        w = float(bbox_w)
+        h = float(bbox_h)
+    return cx, cy, w, h
+
 def pointcloud2_from_numpy(points_xyz, colors_rgb, header):
     """Simple PointCloud2 creation. points_xyz: (N,3) float32, colors_rgb: (N,3) uint8"""
     if points_xyz is None or len(points_xyz) == 0:
@@ -121,87 +136,27 @@ class SimpleYoloV83D(Node):
         self.min_depth_mm = 100      # 10 cm
         self.max_depth_mm = 5000     # 5 m
         self.get_logger().info("Simple YOLOv8 3D detector started")
-    
-    def callback_sync(self, detections_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
-        """Simplified YOLOv8 + RealSense 3D callback.
-        - Assumes color/depth are aligned (same resolution)
-        - Publishes debug 2D overlay, object point cloud, and centroid
-        """
-        t0 = time.time()
 
+    def callback_sync(self, detections_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
+        t0 = time.time()
         try:
-            color = self.br.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
+            color = self.br.imgmsg_to_cv2(color_msg, desired_encoding='bgr8') # convert to bgr for opencv
             depth = self.br.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
         except Exception as e:
             self.get_logger().error(f"Image conversion failed: {e}")
             return
 
-        fx = depth_info_msg.k[0]; fy = depth_info_msg.k[4]
-        cx = depth_info_msg.k[2]; cy = depth_info_msg.k[5]
-        color_h, color_w = color.shape[:2]
-
-        overlay = color.copy()
-        processed = 0
-
-        for det in detections_msg.detections:
-            if not det.results:
-                continue
-
-            res = det.results[0]
-            cls_id = int(res.hypothesis.class_id)
-            score = float(res.hypothesis.score)
-            label = self.class_names[cls_id] if cls_id < len(self.class_names) else f"class{cls_id}"
-
-            # Convert bbox to pixel coordinates (YOLO already uses pixels)
-            cx_det, cy_det, w_det, h_det = normalize_bbox_from_detection(
-                det.bbox.center.position.x,
-                det.bbox.center.position.y,
-                det.bbox.size_x,
-                det.bbox.size_y,
-                color_w, color_h
-            )
-            h_det = yolo_info_msg.height
-            h_color = depth_info_msg.height
-            shift_y_letterbox = h_det - h_color # 640 - 480
-
-    def callback_sync(self, detections_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
-        t0 = time.time()
-        try: # TODO: color_msg and depth_msg and depth_info_msg all say width = 640, height = 480 but yolo_info_msg says height=width=640
-            color = self.br.imgmsg_to_cv2(color_msg, desired_encoding='bgr8') # color_msg object has encoding rgb8, convert to bgr for opencv
-            depth = self.br.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')  # Says encoding is 16UC1, could be uint16 or float32
-            # passthrough tells CvBridge to not change the image encoding — return the raw pixel buffer as a NumPy array
-            # with whatever dtype/shape the sensor_msgs/Image actually contains. You then have to inspect the array
-            # (or depth_msg.encoding) and handle units/dtypes yourself.
-            #
-            # TODO: verify depth encoding
-            # print("encoding:", depth_msg.encoding, "dtype:", depth.dtype, "min/max:", np.nanmin(depth), np.nanmax(depth))
-            # if np.issubdtype(depth.dtype, np.integer):           # typically 16UC1 -> mm
-            #     depth_mm = depth.astype(np.float32)              # already in mm if driver uses mm
-            # elif np.issubdtype(depth.dtype, np.floating):        # typically 32FC1 -> meters
-            #     depth_mm = (depth.astype(np.float32) * 1000.0)   # convert meters -> mm
-            # else:
-            #     raise RuntimeError(f"Unexpected depth dtype: {depth.dtype}")
-
-        except Exception as e:
-            self.get_logger().error(f"Image conversion failed: {e}")
-            return
-
-        # Check shapes. Depth and color both should be 640x480 (wxh)
-        # self.get_logger().info(f"COLOR shape (w x h): {color.shape[1]} x {color.shape[0]}; DEPTH shape: {depth.shape}")
-
         # Intrinsics from aligned depth camera_info
+        # fx, fy = focal lengths expressed in pixels. 
+        # cx, cy = principal point (optical center) in pixel coordinates.
         fx = depth_info_msg.k[0]
         fy = depth_info_msg.k[4]
         cx = depth_info_msg.k[2]
         cy = depth_info_msg.k[5]
-        # fx, fy = focal lengths expressed in pixels. 
-        # cx, cy = principal point (optical center) in pixel coordinates.
 
-        # Width and height of image used for detection (YOLO input size) - should be 640x640
         det_w = int(yolo_info_msg.width) # 640
         det_h = int(yolo_info_msg.height) # 640
-
-        color_h, color_w = color.shape[:2] # 640 x 480 (w x h)
+        color_h, color_w = color.shape[:2] # 480 x 640 (h x w)
 
         # Make copy for overlay
         overlay = color.copy()
@@ -216,7 +171,7 @@ class SimpleYoloV83D(Node):
             cls_id = int(res.hypothesis.class_id)
             label = self.class_names[cls_id] if cls_id < len(self.class_names) else f"class{cls_id}"
 
-            # # get bbox pixel coordinates of detection in YOLO image space
+            # get bbox pixel coordinates of detection in YOLO image space
             bbox_cx = det.bbox.center.position.x
             bbox_cy = det.bbox.center.position.y
             bbox_w = det.bbox.size_x
@@ -224,49 +179,45 @@ class SimpleYoloV83D(Node):
 
             # Yolo doesn't change aspect ratio, so we can just use 640-480=160 pixel shift
             shift_y_letterbox = det_h - color_h     # 640 - 480 = 160
-            x1 = int(round(bbox_cx - bbox_w/2.0))
-            y1 = int(round(bbox_cy - bbox_h/2.0 - shift_y_letterbox/2.0))
-            x2 = int(round(bbox_cx + bbox_w/2.0))
-            y2 = int(round(bbox_cy + bbox_h/2.0 - shift_y_letterbox/2.0))
+            x1 = int(round(bbox_cx - bbox_w / 2))
+            y1 = int(round(bbox_cy - bbox_h / 2 - shift_y_letterbox/2))
+            x2 = int(round(bbox_cx + bbox_w / 2))
+            y2 = int(round(bbox_cy + bbox_h / 2 - shift_y_letterbox/2))
 
             # clamp to image size
-            x1 = max(0, min(x1, color_w-1)); x2 = max(0, min(x2, color_w-1))
-            y1 = max(0, min(y1, color_h-1)); y2 = max(0, min(y2, color_h-1))
+            x1 = max(0, min(color_w-1, x1))
+            x2 = max(0, min(color_w-1, x2))
+            y1 = max(0, min(color_h-1, y1))
+            y2 = max(0, min(color_h-1, y2))
 
             # draw bbox & label
             cv2.rectangle(overlay, (x1,y1), (x2,y2), (0,255,0), 2)
             cv2.putText(overlay, f"{label} {score:.2f}", (x1, max(12,y1-6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
+            
+            # draw center crosshair (ensure integer pixel coords for OpenCV)
+            cx_draw = int(round(bbox_cx))
+            cy_draw = int(round(bbox_cy - shift_y_letterbox / 2.0))
+            cv2.drawMarker(overlay, (cx_draw, cy_draw), (0,0,255), markerType=cv2.MARKER_TILTED_CROSS, markerSize=12, thickness=2)
 
             # create object point cloud from bbox
             points, colors = self.create_object_pointcloud(depth, color, x1, y1, x2, y2, fx, fy, cx, cy)
-
-            if points is None or len(points) == 0:
-                self.get_logger().info(f"Det {i}: no valid points in bbox")
-                continue
-
-            # robust center: median of inlier points (X,Y,Z)
-            centroid = np.median(points, axis=0)  # [X, Y, Z] in meters
-            # publish center point
-            center_msg = PointStamped()
-            center_msg.header = detections_msg.header
-            center_msg.point.x = float(centroid[0])
-            center_msg.point.y = float(centroid[1])
-            center_msg.point.z = float(centroid[2])
-            self.center_pub.publish(center_msg)
-
-            # project centroid back to image for drawing
-            try:
-                proj_u = int(round((centroid[0] * fx) / centroid[2] + cx))
-                proj_v = int(round((centroid[1] * fy) / centroid[2] + cy))
-                cv2.drawMarker(overlay, (proj_u, proj_v), (0,0,255), markerType=cv2.MARKER_TILTED_CROSS, markerSize=12, thickness=2)
-                cv2.putText(overlay, f"{centroid[2]:.2f}m", (proj_u+6, proj_v-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
-            except Exception:
-                pass
-
             # publish object point cloud message
             pc2 = pointcloud2_from_numpy(points, colors, detections_msg.header)
             if pc2 is not None:
                 self.obj_pc_pub.publish(pc2)
+
+            # compute depth as median depth of all points in point cloud
+            centroid = np.median(points, axis=0)  # [X, Y, Z] in meters
+            # convert bbox_cx and bbox_cy to points in meters
+            bbox_cx_m = (bbox_cx - cx) * centroid[2] / fx
+            bbox_cy_m = (bbox_cy - cy) * centroid[2] / fy
+            # publish center point in meters
+            center_msg = PointStamped()
+            center_msg.header = detections_msg.header
+            center_msg.point.x = float(bbox_cx_m)
+            center_msg.point.y = float(bbox_cy_m)
+            center_msg.point.z = float(centroid[2])
+            self.center_pub.publish(center_msg)
 
             processed += 1
 
