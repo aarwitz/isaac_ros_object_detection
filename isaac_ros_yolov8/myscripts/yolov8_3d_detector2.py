@@ -30,21 +30,6 @@ import message_filters
 from message_filters import ApproximateTimeSynchronizer
 
 # Small helpers
-def normalize_bbox_from_detection(bbox_x, bbox_y, bbox_w, bbox_h, det_w, det_h):
-    """Return (cx, cy, w, h) in detection image pixels.
-    Handles both normalized (0..1) and absolute coords (>1)."""
-    if bbox_x <= 1.0 and bbox_y <= 1.0 and bbox_w <= 1.0 and bbox_h <= 1.0:
-        cx = float(bbox_x) * det_w
-        cy = float(bbox_y) * det_h
-        w = float(bbox_w) * det_w
-        h = float(bbox_h) * det_h
-    else:
-        cx = float(bbox_x)
-        cy = float(bbox_y)
-        w = float(bbox_w)
-        h = float(bbox_h)
-    return cx, cy, w, h
-
 def pointcloud2_from_numpy(points_xyz, colors_rgb, header):
     """Simple PointCloud2 creation. points_xyz: (N,3) float32, colors_rgb: (N,3) uint8"""
     if points_xyz is None or len(points_xyz) == 0:
@@ -136,12 +121,54 @@ class SimpleYoloV83D(Node):
         self.min_depth_mm = 100      # 10 cm
         self.max_depth_mm = 5000     # 5 m
         self.get_logger().info("Simple YOLOv8 3D detector started")
+    
+    def callback_sync(self, detections_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
+        """Simplified YOLOv8 + RealSense 3D callback.
+        - Assumes color/depth are aligned (same resolution)
+        - Publishes debug 2D overlay, object point cloud, and centroid
+        """
+        t0 = time.time()
+
+        try:
+            color = self.br.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
+            depth = self.br.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
+        except Exception as e:
+            self.get_logger().error(f"Image conversion failed: {e}")
+            return
+
+        fx = depth_info_msg.k[0]; fy = depth_info_msg.k[4]
+        cx = depth_info_msg.k[2]; cy = depth_info_msg.k[5]
+        color_h, color_w = color.shape[:2]
+
+        overlay = color.copy()
+        processed = 0
+
+        for det in detections_msg.detections:
+            if not det.results:
+                continue
+
+            res = det.results[0]
+            cls_id = int(res.hypothesis.class_id)
+            score = float(res.hypothesis.score)
+            label = self.class_names[cls_id] if cls_id < len(self.class_names) else f"class{cls_id}"
+
+            # Convert bbox to pixel coordinates (YOLO already uses pixels)
+            cx_det, cy_det, w_det, h_det = normalize_bbox_from_detection(
+                det.bbox.center.position.x,
+                det.bbox.center.position.y,
+                det.bbox.size_x,
+                det.bbox.size_y,
+                color_w, color_h
+            )
+            h_det = yolo_info_msg.height
+            h_color = depth_info_msg.height
+            shift_y_letterbox = h_det - h_color # 640 - 480
 
     def callback_sync(self, detections_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
         t0 = time.time()
-        try:
-            color = self.br.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
-            depth = self.br.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')  # could be uint16 or float32
+        try: # TODO: color_msg and depth_msg and depth_info_msg all say width = 640, height = 480 but yolo_info_msg says height=width=640
+            color = self.br.imgmsg_to_cv2(color_msg, desired_encoding='bgr8') # color_msg object has encoding rgb8, convert to bgr for opencv
+            depth = self.br.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')  # Says encoding is 16UC1, could be uint16 or float32
             # passthrough tells CvBridge to not change the image encoding — return the raw pixel buffer as a NumPy array
             # with whatever dtype/shape the sensor_msgs/Image actually contains. You then have to inspect the array
             # (or depth_msg.encoding) and handle units/dtypes yourself.
@@ -159,16 +186,8 @@ class SimpleYoloV83D(Node):
             self.get_logger().error(f"Image conversion failed: {e}")
             return
 
-        # put this in callback_sync after you convert color
-        self.get_logger().info(f"COLOR shape (w x h): {color.shape[1]} x {color.shape[0]}; depth shape: {depth.shape}")
-
-
-        # Sanity logs (helpful during debugging)
-        # self.get_logger().debug(f"depth.shape={getattr(depth,'shape',None)}, dtype={getattr(depth,'dtype',None)}; color.shape={color.shape}")
-
-        # if (color.shape[1], color.shape[0]) != (depth.shape[1], depth.shape[0]):
-        #     color = cv2.resize(color, (depth.shape[1], depth.shape[0]), interpolation=cv2.INTER_LINEAR)
-        #     self.get_logger().info(f"Resized color {color.shape[1]}x{color.shape[0]} -> depth {depth.shape[1]}x{depth.shape[0]}")
+        # Check shapes. Depth and color both should be 640x480 (wxh)
+        # self.get_logger().info(f"COLOR shape (w x h): {color.shape[1]} x {color.shape[0]}; DEPTH shape: {depth.shape}")
 
         # Intrinsics from aligned depth camera_info
         fx = depth_info_msg.k[0]
@@ -178,16 +197,14 @@ class SimpleYoloV83D(Node):
         # fx, fy = focal lengths expressed in pixels. 
         # cx, cy = principal point (optical center) in pixel coordinates.
 
-        # Width and height of image used for detection (YOLO input size)
-        det_w = int(yolo_info_msg.width)
-        det_h = int(yolo_info_msg.height)
-        # Shape TODO what is this why is it not 640x640, is it just because we want to display higher res?
-        color_h, color_w = color.shape[:2]
+        # Width and height of image used for detection (YOLO input size) - should be 640x640
+        det_w = int(yolo_info_msg.width) # 640
+        det_h = int(yolo_info_msg.height) # 640
+
+        color_h, color_w = color.shape[:2] # 640 x 480 (w x h)
 
         # Make copy for overlay
         overlay = color.copy()
-        # cv2.rectangle(overlay, (0,0), (overlay.shape[1]-1, overlay.shape[0]-1), (0,0,255), 2)
-        # cv2.putText(overlay, f"{color_w}x{color_h}", (8,24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,255), 2)
 
         # Loop detections
         processed = 0
@@ -199,49 +216,20 @@ class SimpleYoloV83D(Node):
             cls_id = int(res.hypothesis.class_id)
             label = self.class_names[cls_id] if cls_id < len(self.class_names) else f"class{cls_id}"
 
-            # bounding box in detection image coords (may be normalized)
-            bbox_cx, bbox_cy, bbox_w, bbox_h = normalize_bbox_from_detection(
-                det.bbox.center.position.x,
-                det.bbox.center.position.y,
-                det.bbox.size_x,
-                det.bbox.size_y,
-                det_w, det_h
-            )
+            # # get bbox pixel coordinates of detection in YOLO image space
+            bbox_cx = det.bbox.center.position.x
+            bbox_cy = det.bbox.center.position.y
+            bbox_w = det.bbox.size_x
+            bbox_h = det.bbox.size_y
 
-            # scale bbox to color image pixels
-            # scale_x = color_w / float(det_w)
-            # scale_y = color_h / float(det_h)
-            # pb_cx = bbox_cx * scale_x
-            # pb_cy = bbox_cy * scale_y
-            # pb_w  = bbox_w  * scale_x
-            # pb_h  = bbox_h  * scale_y
+            # Yolo doesn't change aspect ratio, so we can just use 640-480=160 pixel shift
+            shift_y_letterbox = det_h - color_h     # 640 - 480 = 160
+            x1 = int(round(bbox_cx - bbox_w/2.0))
+            y1 = int(round(bbox_cy - bbox_h/2.0 - shift_y_letterbox/2.0))
+            x2 = int(round(bbox_cx + bbox_w/2.0))
+            y2 = int(round(bbox_cy + bbox_h/2.0 - shift_y_letterbox/2.0))
 
-
-            # Use intrinsics to compute uniform scale + pad (invert letterbox)
-            det_fx = float(yolo_info_msg.k[0])
-            det_fy = float(yolo_info_msg.k[4])
-            col_fx = float(depth_info_msg.k[0])   # aligned depth/camera intrinsics (color)
-            col_fy = float(depth_info_msg.k[4])
-
-            # Prefer fx-based scale (most robust if square pixels)
-            s_x = det_fx / (col_fx + 1e-12)
-            s_y = det_fy / (col_fy + 1e-12)
-            # if encoder preserved aspect ratio, s_x ≈ s_y; use the average or one of them
-            s = (s_x + s_y) / 2.0
-
-            # compute pad in detector pixels (how many pixels were added to make det_w/det_h)
-            pad_x = (det_w - s * color_w) / 2.0
-            pad_y = (det_h - s * color_h) / 2.0
-
-            # now map detector pixels back into color pixels by removing pad then dividing by scale
-            pb_cx = (bbox_cx - pad_x) / s
-            pb_cy = (bbox_cy - pad_y) / s
-            pb_w  = bbox_w  / s
-            pb_h  = bbox_h  / s
-
-            # bbox pixel coords
-            x1 = int(round(pb_cx - pb_w/2.0)); y1 = int(round(pb_cy - pb_h/2.0))
-            x2 = int(round(pb_cx + pb_w/2.0)); y2 = int(round(pb_cy + pb_h/2.0))
+            # clamp to image size
             x1 = max(0, min(x1, color_w-1)); x2 = max(0, min(x2, color_w-1))
             y1 = max(0, min(y1, color_h-1)); y2 = max(0, min(y2, color_h-1))
 
