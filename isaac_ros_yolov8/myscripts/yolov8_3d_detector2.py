@@ -255,22 +255,34 @@ class SimpleYoloV83D(Node):
             depth_patch = depth[py0:py1, px0:px1]
             if depth_patch.size == 0:
                 continue
+            # Convert to mm if needed
+            if np.issubdtype(depth_patch.dtype, np.integer):
+                depth_mm_patch = depth_patch.astype(np.float32)
+            else:
+                depth_mm_patch = depth_patch.astype(np.float32) * 1000.0
 
-            # compute depth as median depth of all points in point cloud
-            centroid = np.median(points, axis=0)  # [X, Y, Z] in meters
-            # convert bbox_cx and bbox_cy to points in meters
-            bbox_cx_m = (bbox_cx - cx) * centroid[2] / fx
-            bbox_cy_m = (bbox_cy - cy) * centroid[2] / fy
-            # publish center point in meters
+            valid_mask = (depth_mm_patch > self.min_depth_mm) & (depth_mm_patch < self.max_depth_mm)
+            if not np.any(valid_mask):
+                continue
+
+            z_median_mm = float(np.median(depth_mm_patch[valid_mask]))
+            z_median_m = z_median_mm / 1000.0
+
+            # Compute 3D center
+            bbox_cx_m = (center_x - cx) * z_median_m / fx
+            bbox_cy_m = (center_y - cy) * z_median_m / fy
+
+            # Publish 3D center
             center_msg = PointStamped()
             center_msg.header = detections_msg.header
             center_msg.point.x = float(bbox_cx_m)
             center_msg.point.y = float(bbox_cy_m)
-            center_msg.point.z = float(centroid[2])
+            center_msg.point.z = float(z_median_m)
             self.center_pub.publish(center_msg)
             # log the center point x, y, z in meters
-            self.get_logger().info(f"3D Detection {i}: Center (m): x={bbox_cx_m:.3f}, y={bbox_cy_m:.3f}, z={centroid[2]:.3f}")
-
+            self.get_logger().info(
+                    f"  [{i}] {label}: x={bbox_cx_m:.3f}, y={bbox_cy_m:.3f}, z={z_median_m:.3f} m"
+                )
             # processed += 1
 
         # publish overlay image
