@@ -184,6 +184,16 @@ class SimpleYoloV83D(Node):
             self.get_logger().error(f"Image conversion failed: {e}")
             return
 
+        # DEBUG: Check depth image stats
+        if verbose:
+            depth_nonzero = depth[depth > 0]
+            if depth_nonzero.size > 0:
+                self.get_logger().info(f"Depth image: shape={depth.shape}, dtype={depth.dtype}, "
+                                      f"nonzero pixels={depth_nonzero.size}, "
+                                      f"depth range: {np.min(depth_nonzero)} to {np.max(depth_nonzero)}")
+            else:
+                self.get_logger().warn(f"Depth image has NO valid data! All zeros.")
+
         # Intrinsics from aligned depth camera_info
         # fx, fy = focal lengths expressed in pixels. 
         # cx, cy = principal point (optical center) in pixel coordinates.
@@ -236,52 +246,43 @@ class SimpleYoloV83D(Node):
             cy_draw = int(round(bbox_cy - shift_y_letterbox / 2.0))
             cv2.drawMarker(overlay, (cx_draw, cy_draw), (0,0,255), markerType=cv2.MARKER_TILTED_CROSS, markerSize=12, thickness=2)
 
+            # DEBUG: Check depth at bbox location
+            if verbose:
+                bbox_depth_crop = depth[y1:y2, x1:x2]
+                depth_nz = bbox_depth_crop[bbox_depth_crop > 0]
+                self.get_logger().info(f"  Bbox coords: x=[{x1},{x2}], y=[{y1},{y2}], "
+                                      f"bbox_depth nonzero={depth_nz.size}, "
+                                      f"range={np.min(depth_nz) if depth_nz.size > 0 else 0} to {np.max(depth_nz) if depth_nz.size > 0 else 0}")
+
             # create object point cloud from bbox
             points, colors = self.create_object_pointcloud(depth, color, x1, y1, x2, y2, fx, fy, cx, cy)
+            
+            # Skip this detection if no valid pointcloud
+            if points is None or len(points) == 0:
+                if verbose:
+                    self.get_logger().warn(f"  No valid pointcloud for detection {i}")
+                continue
+                
             # publish object point cloud message
             pc2 = pointcloud2_from_numpy_fast(points, colors, detections_msg.header)
             if pc2 is not None:
                 self.obj_pc_pub.publish(pc2)
 
-            # Simplified 5x5 center sample for depth
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
-            patch_size = 5
-            px0 = max(0, center_x - patch_size // 2)
-            py0 = max(0, center_y - patch_size // 2)
-            px1 = min(color_w, px0 + patch_size)
-            py1 = min(color_h, py0 + patch_size)
-
-            depth_patch = depth[py0:py1, px0:px1]
-            if depth_patch.size == 0:
-                continue
-            # Convert to mm if needed
-            if np.issubdtype(depth_patch.dtype, np.integer):
-                depth_mm_patch = depth_patch.astype(np.float32)
-            else:
-                depth_mm_patch = depth_patch.astype(np.float32) * 1000.0
-
-            valid_mask = (depth_mm_patch > self.min_depth_mm) & (depth_mm_patch < self.max_depth_mm)
-            if not np.any(valid_mask):
-                continue
-
-            z_median_mm = float(np.median(depth_mm_patch[valid_mask]))
-            z_median_m = z_median_mm / 1000.0
-
-            # Compute 3D center
-            bbox_cx_m = (center_x - cx) * z_median_m / fx
-            bbox_cy_m = (center_y - cy) * z_median_m / fy
-
+            # Compute 3D center from median of pointcloud (much more robust than 5x5 patch!)
+            centroid = np.median(points, axis=0)
+            
             # Publish 3D center
             center_msg = PointStamped()
             center_msg.header = detections_msg.header
-            center_msg.point.x = float(bbox_cx_m)
-            center_msg.point.y = float(bbox_cy_m)
-            center_msg.point.z = float(z_median_m)
+            center_msg.point.x = float(centroid[0])
+            center_msg.point.y = float(centroid[1])
+            center_msg.point.z = float(centroid[2])
             self.center_pub.publish(center_msg)
+            
             # log the center point x, y, z in meters
-            self.get_logger().info(
-                    f"  [{i}] {label}: x={bbox_cx_m:.3f}, y={bbox_cy_m:.3f}, z={z_median_m:.3f} m"
+            if verbose:
+                self.get_logger().info(
+                    f"  [{i}] {label}: x={centroid[0]:.3f}, y={centroid[1]:.3f}, z={centroid[2]:.3f} m ({len(points)} pts)"
                 )
             # processed += 1
 
