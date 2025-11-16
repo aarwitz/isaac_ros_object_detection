@@ -9,8 +9,11 @@ echo "🚀 Installing Isaac ROS Dependencies..."
 echo "======================================"
 
 # Update package lists
+# Allow release info change for the Isaac ROS repo (some upstream repos changed metadata)
 echo "📦 Updating package lists..."
-sudo apt-get update
+# Accept repository 'Origin/Label/Suite' changes to avoid aborting in CI/devcontainers
+# (apt 2.4+ supports --allow-releaseinfo-change)
+sudo apt-get update --allow-releaseinfo-change || sudo apt-get update
 
 # Install core Isaac ROS packages
 echo "🤖 Installing Isaac ROS core packages..."
