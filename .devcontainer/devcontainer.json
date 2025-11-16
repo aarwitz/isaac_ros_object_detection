@@ -55,24 +55,24 @@
     "workspaceFolder": "/workspaces/isaac_ros-dev",
     "workspaceMount": "source=${localWorkspaceFolder}/../..,target=/workspaces/isaac_ros-dev,type=bind,consistency=cached",
 
-    // Post-create command to set up the environment
-    "postCreateCommand": "bash -c 'cd /workspaces/isaac_ros-dev && source /opt/ros/humble/setup.bash && ./src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/install_isaac_deps.sh'",
+    // Post-create command to set up the environment (apt packages only, no workspace build)
+    "postCreateCommand": "bash -c './src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/install_isaac_deps.sh'",
 
     // Keep container running
     "shutdownAction": "stopContainer",
     
     // User configuration
-    "remoteUser": "admin",
+    // "remoteUser": "admin",
     
     // Forward ports if needed
     "forwardPorts": [],
     
     // Features
-    "features": {
-        "ghcr.io/devcontainers/features/common-utils:2": {
-            "installZsh": true,
-            "configureZshAsDefaultShell": true,
-            "installOhMyZsh": true
-        }
-    }
+    // "features": {
+    //     "ghcr.io/devcontainers/features/common-utils:2": {
+    //         "installZsh": true,
+    //         "configureZshAsDefaultShell": true,
+    //         "installOhMyZsh": true
+    //     }
+    // }
 }

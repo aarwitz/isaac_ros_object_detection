@@ -2,6 +2,9 @@
 
 ## Isaac ROS / development helper commands for setting up vision system
 
+
+## Docker Container Setup
+
 Change to the workspace subdirectory:
 
 ```bash
@@ -88,7 +91,7 @@ ros2 launch isaac_ros_examples isaac_ros_examples.launch.py \
   launch_fragments:=realsense_mono_rect_depth,yolov8 \
   model_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks2.onnx \
   engine_file_path:=${ISAAC_ROS_WS}/isaac_ros_assets/models/yolov8/socks2.plan \
-  confidence_threshold:=0.85 \
+  confidence_threshold:=0.7 \
   stereo_module.visual_preset:=3 \
   stereo_module.enable_auto_exposure:=true \
   stereo_module.emitter_enabled:=1 \
@@ -139,7 +142,8 @@ Copy an (x,y,z) from the detection output in the GUI and see what poses our scri
 ```bash
 python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/simple_robot_pick_test.py -0.002 0.039 0.330 /dev/ttyUSB0 --dry-run 
 ```
-
+`python /workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/simple_robot_pick_test.py -0.031 0.021 0.336 /dev/ttyUSB0
+x=-0.031, y=0.021, z=0.336
 And then you can try them out with
 ```bash
 python /workspaces/isaac_ros-dev/src/RoArm-M2-S_python/serial_simple_ctrl.py /dev/ttyUSB0
@@ -148,7 +152,8 @@ You may need
 ```bash
 python -m pip install pyserial
 ```
-
+{"T":104,"x":300.0,"y":31.0,"z":30.0,"t":0,"spd":0.25}
+x=0.012, y=0.025, z=0.380
 # Finetuning yolov8
 - Place objects and run 
 ```bash
@@ -228,4 +233,73 @@ trtexec \
   --saveEngine=/workspaces/isaac_ros-dev/isaac_ros_assets/models/yolov8/socks.plan \
   --memPoolSize=workspace:2048
   --verbose
+```
+
+# Errors/Troubleshooting
+
+**Error:**
+E: Unable to locate package
+**Solution:**
+Try updating such that releaseinfo can change
+sudo apt-get update --allow-releaseinfo-change
+
+**Error:**
+```
+[WARN] [realsense2_camera]: XXX Hardware Notification:Motion Module force pause,1.7633e+12,Error,Hardware Error
+```
+
+**Solution:**
+Minimal rebuild:
+```bash
+cd /workspaces/isaac_ros-dev
+rm -rf build install log
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select isaac_ros_test isaac_ros_yolov8
+source install/setup.bash
+```
+
+**Error:**
+Build SAM2 from source I was getting the error:
+In file included from /workspaces/isaac_ros-dev/src/isaac_ros_image_segmentation/isaac_ros_segment_anything2/src/segment_anything2_state_manager.cpp:18:
+/workspaces/isaac_ros-dev/src/isaac_ros_image_segmentation/isaac_ros_segment_anything2/include/isaac_ros_segment_anything2/segment_anything2_state_manager.hpp:34:10: fatal error: isaac_ros_common/cuda_stream.hpp: No such file or directory
+   34 | #include "isaac_ros_common/cuda_stream.hpp"
+      |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+compilation terminated.
+
+**Solution:**
+Have to build SAM2 from source because they don't have debs for ros2 humble
+But installing SAM2 from source will require me to install all the packages I use from source, otherwise conflicts like header mismatches occur.
+**Rule:Either ALL deps come from apt (binary install)
+Or ALL deps come from source (source build)**
+
+Remove all Isaac ROS apt packages
+```bash
+sudo apt remove '*isaac-ros*' '*gxf-isaac*' -y
+```
+
+Confirm removed
+```bash
+dpkg -l | grep isaac
+```
+```bash
+dpkg -l | grep gxf
+```
+Remove build/clean workspace
+```bash
+cd /workspaces/isaac_ros-dev
+```
+```bash
+rm -rf build/ install/ log/
+```
+
+Install packages
+```bash
+mkdir -p src
+cd src
+git clone https://github.com/NVIDIA-ISAAC-ROS/Isaac-ROS-Common.git isaac_ros_common
+git clone https://github.com/NVIDIA-ISAAC-ROS/Isaac-ROS-NITROS.git isaac_ros_nitros
+git clone https://github.com/NVIDIA-ISAAC-ROS/Isaac-ROS-SAM.git isaac_ros_image_segmentation
+git clone https://github.com/NVIDIA-ISAAC-ROS/Isaac-ROS-TensorRT.git isaac_ros_tensorrt
+git clone https://github.com/NVIDIA-ISAAC-ROS/Isaac-ROS-DNN-Image-Encoder.git isaac_ros_dnn_image_encoder
+git clone https://github.com/NVIDIA-ISAAC-ROS/Isaac-ROS-Image-Proc.git isaac_ros_image_proc
 ```
