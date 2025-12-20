@@ -14,6 +14,11 @@ import websockets
 import threading
 import time
 import json
+import struct
+import traceback
+import numpy as np
+import hashlib
+import json
 import numpy as np
 import struct
 import traceback
@@ -35,6 +40,11 @@ class Enhanced3DViewer(Node):
         self._last_meta_time = 0
         self._last_center_time = 0
         self._lock = threading.Lock()
+        
+        # Cache hashes to detect changes
+        self._last_2d_hash = None
+        self._last_3d_hash = None
+        self._last_full_scene_hash = None
 
         # Counters for debugging
         self._2d_count = 0
@@ -76,13 +86,16 @@ class Enhanced3DViewer(Node):
         try:
             self._2d_count += 1
             image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            ok, jpeg = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            # JPEG quality 80 - good balance of quality and size
+            ok, jpeg = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok:
+                jpeg_bytes = jpeg.tobytes()
                 with self._lock:
-                    self._latest_2d_frame = jpeg.tobytes()
+                    self._latest_2d_frame = jpeg_bytes
                     self._last_2d_time = time.time()
+                    self._last_2d_hash = hashlib.md5(jpeg_bytes).digest()
                 if self._2d_count % 10 == 0:  # Log every 10th frame
-                    self.get_logger().info(f"🖼️ Processed 2D frame #{self._2d_count}, size: {len(jpeg.tobytes())} bytes")
+                    self.get_logger().info(f"🖼️ Processed 2D frame #{self._2d_count}, size: {len(jpeg_bytes)} bytes")
         except Exception as e:
             self.get_logger().error(f"Failed to process 2D image: {e}")
             traceback.print_exc()
@@ -90,13 +103,18 @@ class Enhanced3DViewer(Node):
     def pointcloud_callback(self, msg):
         try:
             self._3d_count += 1
-            # Convert PointCloud2 to JSON for web transmission
-            points_data = self.pointcloud2_to_json(msg)
+            # Convert PointCloud2 to binary for web transmission (reduced for performance)
+            points_bytes = self.pointcloud2_to_binary(msg, max_points=3000)
             with self._lock:
-                self._latest_pointcloud = json.dumps(points_data).encode('utf-8')
+                self._latest_pointcloud = points_bytes
                 self._last_3d_time = time.time()
+                self._last_3d_hash = hashlib.md5(points_bytes).digest()
             if self._3d_count % 5 == 0:  # Log every 5th point cloud
-                self.get_logger().info(f"📡 Processed point cloud #{self._3d_count} with {points_data['num_points']} points")
+                try:
+                    n = struct.unpack_from('<I', points_bytes, 0)[0]
+                    self.get_logger().info(f"📡 Processed point cloud #{self._3d_count} with {n} points, {len(points_bytes)} bytes")
+                except Exception:
+                    self.get_logger().info(f"📡 Processed point cloud #{self._3d_count}")
         except Exception as e:
             self.get_logger().error(f"Failed to process point cloud: {e}")
             traceback.print_exc()
@@ -104,13 +122,18 @@ class Enhanced3DViewer(Node):
     def full_scene_callback(self, msg):
         try:
             self._full_scene_count += 1
-            # Convert PointCloud2 to JSON for web transmission
-            points_data = self.pointcloud2_to_json(msg)
+            # Convert PointCloud2 to binary for web transmission (reduced for performance)
+            points_bytes = self.pointcloud2_to_binary(msg, max_points=5000)
             with self._lock:
-                self._latest_full_scene = json.dumps(points_data).encode('utf-8')
+                self._latest_full_scene = points_bytes
                 self._last_full_scene_time = time.time()
+                self._last_full_scene_hash = hashlib.md5(points_bytes).digest()
             if self._full_scene_count % 5 == 0:  # Log every 5th full scene
-                self.get_logger().info(f"🌍 Processed full scene #{self._full_scene_count} with {points_data['num_points']} points")
+                try:
+                    n = struct.unpack_from('<I', points_bytes, 0)[0]
+                    self.get_logger().info(f"🌍 Processed full scene #{self._full_scene_count} with {n} points, {len(points_bytes)} bytes")
+                except Exception:
+                    self.get_logger().info(f"🌍 Processed full scene #{self._full_scene_count}")
         except Exception as e:
             self.get_logger().error(f"Failed to process full scene: {e}")
             traceback.print_exc()
@@ -150,6 +173,75 @@ class Enhanced3DViewer(Node):
 
 
 
+    def pointcloud2_to_binary(self, pc_msg, max_points=10000):
+        """Efficiently pack point cloud to binary: header (uint32 N) + float32 xyz (3*N) + uint8 rgb (3*N)"""
+        try:
+            # Get field offsets
+            x_offset = y_offset = z_offset = r_off = g_off = b_off = None
+            for field in pc_msg.fields:
+                if field.name == 'x':
+                    x_offset = field.offset
+                elif field.name == 'y':
+                    y_offset = field.offset
+                elif field.name == 'z':
+                    z_offset = field.offset
+                elif field.name == 'r':
+                    r_off = field.offset
+                elif field.name == 'g':
+                    g_off = field.offset
+                elif field.name == 'b':
+                    b_off = field.offset
+            
+            if any(offset is None for offset in [x_offset, y_offset, z_offset, r_off, g_off, b_off]):
+                self.get_logger().warn(f"Missing required point cloud fields. Available: {[f.name for f in pc_msg.fields]}")
+                return struct.pack('<I', 0)
+            
+            # Convert to bytes
+            if hasattr(pc_msg.data, 'tobytes'):
+                data_bytes = pc_msg.data.tobytes()
+            else:
+                data_bytes = bytes(pc_msg.data)
+            
+            point_step = pc_msg.point_step
+            total_points = int(pc_msg.width) * int(pc_msg.height or 1)
+            
+            # Sample points uniformly if too many
+            if total_points <= max_points:
+                indices = np.arange(total_points)
+            else:
+                stride = max(1, total_points // max_points)
+                indices = np.arange(0, total_points, stride)[:max_points]
+            
+            num_points = len(indices)
+            
+            # Vectorized extraction using numpy (much faster than struct loop)
+            data_array = np.frombuffer(data_bytes, dtype=np.uint8)
+            
+            # Extract XYZ as float32
+            xyz = np.empty((num_points, 3), dtype=np.float32)
+            for i, idx in enumerate(indices):
+                offset = idx * point_step
+                xyz[i, 0] = -np.frombuffer(data_bytes[offset + x_offset:offset + x_offset + 4], dtype='<f4')[0]  # -x
+                xyz[i, 1] = -np.frombuffer(data_bytes[offset + y_offset:offset + y_offset + 4], dtype='<f4')[0]  # -y
+                xyz[i, 2] = np.frombuffer(data_bytes[offset + z_offset:offset + z_offset + 4], dtype='<f4')[0]   # z
+            
+            # Extract RGB as uint8
+            rgb = np.empty((num_points, 3), dtype=np.uint8)
+            for i, idx in enumerate(indices):
+                offset = idx * point_step
+                rgb[i, 0] = data_array[offset + r_off]
+                rgb[i, 1] = data_array[offset + g_off]
+                rgb[i, 2] = data_array[offset + b_off]
+            
+            # Pack: uint32 count + float32 xyz array + uint8 rgb array
+            header = struct.pack('<I', num_points)
+            return header + xyz.tobytes() + rgb.tobytes()
+            
+        except Exception as e:
+            self.get_logger().error(f"Error in pointcloud2_to_binary: {e}")
+            traceback.print_exc()
+            return struct.pack('<I', 0)
+    
     def pointcloud2_to_json(self, pc_msg):
         """Convert PointCloud2 to JSON format for web visualization"""
         try:
@@ -258,6 +350,17 @@ class Enhanced3DViewer(Node):
             elif data_type == 'center':
                 return self._latest_center_point
         return None
+    
+    def get_latest_hash(self, data_type):
+        """Get hash of latest data to detect changes"""
+        with self._lock:
+            if data_type == '2d':
+                return self._last_2d_hash
+            elif data_type == '3d':
+                return self._last_3d_hash
+            elif data_type == 'full_scene':
+                return self._last_full_scene_hash
+        return None
 
     def has_data(self, data_type):
         """Check if we have recent data"""
@@ -312,19 +415,33 @@ async def stream_handler(websocket, path=None):
             print(f"⏳ Waiting for {data_type} data...")
 
         frame_count = 0
+        last_hash = None
         while True:
             try:
                 data = node_ref.get_latest_data(data_type) if node_ref else None
-                if data:
-                    await websocket.send(data)
-                    frame_count += 1
-                    if frame_count % 20 == 0:  # Log every 20 frames
-                        print(f"📤 Sent {frame_count} {data_type} frames to client")
-                else:
-                    # Send a small keepalive message
-                    await websocket.send(b'')
+                current_hash = node_ref.get_latest_hash(data_type) if node_ref else None
                 
-                await asyncio.sleep(0.05)  # 20 FPS
+                # Only send if data changed (for binary types) or always send for text types
+                if data:
+                    should_send = True
+                    if data_type in ['2d', '3d', 'full_scene'] and current_hash:
+                        should_send = (current_hash != last_hash)
+                        if should_send:
+                            last_hash = current_hash
+                    
+                    if should_send:
+                        await websocket.send(data)
+                        frame_count += 1
+                        if frame_count % 20 == 0:  # Log every 20 frames
+                            print(f"📤 Sent {frame_count} {data_type} frames to client")
+                
+                # Adjust sleep based on data type (2D faster, 3D slower)
+                if data_type == '2d':
+                    await asyncio.sleep(0.05)  # 20 FPS for 2D (faster)
+                elif data_type in ['metadata', 'center']:
+                    await asyncio.sleep(0.05)  # 20 FPS for metadata
+                else:
+                    await asyncio.sleep(0.1)  # 10 FPS for 3D (slower to reduce load)
                 
             except websockets.exceptions.ConnectionClosed:
                 print(f"🔌 Client disconnected from {path}")

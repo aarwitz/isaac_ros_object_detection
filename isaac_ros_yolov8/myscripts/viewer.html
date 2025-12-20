@@ -429,6 +429,71 @@
     }
 
     let updateCounter = 0;
+    
+    function updatePointCloudBinary(buffer) {
+      try {
+        // If we're showing full scene, don't update with object-only point cloud
+        if (showingFullScene) {
+          debugLog('Skipping object point cloud update while showing full scene');
+          return;
+        }
+        
+        // Binary format: uint32 num_points, float32[num_points*3], uint8[num_points*3]
+        const dv = new DataView(buffer);
+        const num = dv.getUint32(0, true); // little-endian
+        
+        if (num === 0) {
+          debugLog('Received empty point cloud');
+          document.getElementById('point-count').textContent = 'Points: 0';
+          return;
+        }
+        
+        debugLog(`Binary point cloud: ${num} points, ${buffer.byteLength} bytes`);
+        
+        const pointsOffset = 4;
+        const pointsCount = num * 3;
+        const positions = new Float32Array(buffer, pointsOffset, pointsCount);
+        const pointsByteLen = num * 3 * 4; // 4 bytes per float32
+        const colorsOffset = pointsOffset + pointsByteLen;
+        const colorsRaw = new Uint8Array(buffer, colorsOffset, num * 3);
+        
+        // Remove existing point cloud
+        if (pointCloud) {
+          scene.remove(pointCloud);
+          pointCloud.geometry.dispose();
+          pointCloud.material.dispose();
+        }
+        
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        
+        // Normalize uint8 colors to 0-1 range for Three.js
+        geometry.setAttribute('color', new THREE.BufferAttribute(colorsRaw, 3, true)); // normalized=true
+        
+        const material = new THREE.PointsMaterial({
+          size: currentPointSize,
+          vertexColors: true,
+          sizeAttenuation: false
+        });
+        
+        pointCloud = new THREE.Points(geometry, material);
+        scene.add(pointCloud);
+        
+        // Update info panel
+        document.getElementById('point-count').textContent = `Object Points: ${num}`;
+        document.getElementById('connection-status').textContent = '🟢 Connected';
+        document.getElementById('rgb-debug').textContent = `RGB: ${num} color points`;
+        
+        updateCounter++;
+        document.getElementById('update-count').textContent = updateCounter;
+        
+        debugLog(`Point cloud updated: ${num} points`);
+      } catch (e) {
+        debugLog(`Binary point cloud error: ${e.message}`);
+        console.error('Failed to update binary point cloud', e);
+      }
+    }
+    
     function updatePointCloud(pointData) {
       try {
         // If we're showing full scene, don't update with object-only point cloud
@@ -568,9 +633,9 @@
 
       ws3d.onmessage = (evt) => {
         try {
-          if (evt.data.byteLength > 0) {
-            const pointData = new TextDecoder().decode(evt.data);
-            updatePointCloud(pointData);
+          if (evt.data && evt.data.byteLength > 0) {
+            // Binary format: uint32 num_points, float32[num_points*3], uint8[num_points*3]
+            updatePointCloudBinary(evt.data);
           }
         } catch (e) {
           debugLog(`3D data error: ${e.message}`);
@@ -666,9 +731,9 @@
 
       wsFullScene.onmessage = (evt) => {
         try {
-          if (evt.data.byteLength > 0) {
-            const fullSceneString = new TextDecoder().decode(evt.data);
-            updateFullScenePointCloud(fullSceneString);
+          if (evt.data && evt.data.byteLength > 0) {
+            // Binary format: uint32 num_points, float32[num_points*3], uint8[num_points*3]
+            updateFullScenePointCloudBinary(evt.data);
           }
         } catch (e) {
           debugLog(`Full scene error: ${e.message}`);
@@ -703,6 +768,69 @@
       toggleFullSceneBtn.textContent = 'Show Whole Scene';
       toggleFullSceneBtn.style.background = '#333';
       debugLog('Full scene manually disconnected, switching back to object-only view');
+    }
+
+    function updateFullScenePointCloudBinary(buffer) {
+      try {
+        // Binary format: uint32 num_points, float32[num_points*3], uint8[num_points*3]
+        const dv = new DataView(buffer);
+        const num = dv.getUint32(0, true); // little-endian
+        
+        if (num === 0) {
+          debugLog('Received empty full scene');
+          return;
+        }
+        
+        debugLog(`Binary full scene: ${num} points, ${buffer.byteLength} bytes`);
+        
+        const pointsOffset = 4;
+        const pointsCount = num * 3;
+        const positions = new Float32Array(buffer, pointsOffset, pointsCount);
+        const pointsByteLen = num * 3 * 4; // 4 bytes per float32
+        const colorsOffset = pointsOffset + pointsByteLen;
+        const colorsRaw = new Uint8Array(buffer, colorsOffset, num * 3);
+        
+        // Debug: Check bounds
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (let i = 0; i < positions.length; i += 3) {
+          const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+          if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+            minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+          }
+        }
+        debugLog(`Full scene bounds: X[${minX.toFixed(2)}, ${maxX.toFixed(2)}] Y[${minY.toFixed(2)}, ${maxY.toFixed(2)}] Z[${minZ.toFixed(2)}, ${maxZ.toFixed(2)}]`);
+        
+        // Remove existing point cloud
+        if (pointCloud) {
+          scene.remove(pointCloud);
+          pointCloud.geometry.dispose();
+          pointCloud.material.dispose();
+        }
+        
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colorsRaw, 3, true)); // normalized=true
+        
+        const material = new THREE.PointsMaterial({
+          size: parseFloat(pointSizeSlider.value),
+          vertexColors: true,
+          sizeAttenuation: false
+        });
+        
+        pointCloud = new THREE.Points(geometry, material);
+        scene.add(pointCloud);
+        
+        // Update info
+        document.getElementById('point-count').textContent = `Full Scene Points: ${num}`;
+        document.getElementById('rgb-debug').textContent = `RGB: ${num} color points`;
+        
+        debugLog(`Full scene updated: ${num} points`);
+      } catch (e) {
+        debugLog(`Binary full scene error: ${e.message}`);
+        console.error('Failed to update binary full scene', e);
+      }
     }
 
     function updateFullScenePointCloud(dataString) {
