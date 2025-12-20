@@ -29,6 +29,7 @@ import threading
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 from geometry_msgs.msg import PointStamped
 from vision_msgs.msg import Detection2DArray
+from isaac_ros_tensor_list_interfaces.msg import TensorList
 import message_filters
 from message_filters import ApproximateTimeSynchronizer
 
@@ -103,6 +104,7 @@ class SimpleYoloV83D(Node):
         self.color_topic = '/image_rect'
         self.depth_info_topic = '/aligned_depth_to_color/camera_info'
         self.yolo_info_topic = '/yolov8_encoder/resize/camera_info'
+        self.mask_topic = '/segment_anything/raw_segmentation_mask'
 
         # Publishers
         self.debug_img_pub = self.create_publisher(Image, '/yolov8_debug', 5) # buffer size of 5 messages so subscribers running late are less likely to miss any published messages
@@ -119,22 +121,30 @@ class SimpleYoloV83D(Node):
         self.color_sub = message_filters.Subscriber(self, Image, self.color_topic)
         self.depth_info_sub = message_filters.Subscriber(self, CameraInfo, self.depth_info_topic)
         self.yolo_info_sub = message_filters.Subscriber(self, CameraInfo, self.yolo_info_topic)
+        self.mask_sub = message_filters.Subscriber(self, TensorList, self.mask_topic)
 
         # ApproximateTimeSynchronizer is part of message_filters 
         # it is a synchronizer/filter that buffers messages from the message_filters.Subscriber objects you pass it
         # and looks for sets whose header.stamp values are within the configured slop.
         self.sync = ApproximateTimeSynchronizer(
-            [self.detection_sub, self.depth_sub, self.color_sub, self.depth_info_sub, self.yolo_info_sub],
+            [self.detection_sub, self.depth_sub, self.color_sub, self.depth_info_sub, self.yolo_info_sub, self.mask_sub],
             queue_size=30, # increased from 10 - TODO why does increasing queue size and slop help "smooth" detection?
             slop=0.2       # increased from 0.08 (200 ms tolerance for matching timestamps)
         )
         self.sync.registerCallback(self.callback_sync)
         # registerCallback(your_fn) simply tells that synchronizer which function to call when it finds a matched set.
-        # The message_filters.Subscribers receive messages from the ROS middleware, forward them into the synchronizer’s buffers,
+        # The message_filters.Subscribers receive messages from the ROS middleware, forward them into the synchronizer's buffers,
         # and the synchronizer invokes your registered callback with the matched messages.
 
         #1: Timer for processing (30 Hz) TODO: is this even used?
         self.process_timer = self.create_timer(1.0 / 30.0, self.process_frame)
+        
+        # Diagnostic timer to check topic status
+        self.create_timer(5.0, self.diagnostic_callback)
+        self.topic_counts = {
+            'detections': 0, 'depth': 0, 'color': 0, 
+            'depth_info': 0, 'yolo_info': 0, 'mask': 0, 'synced': 0
+        }
 
         # Simple class list for label drawing (adjust to your model)
         self.class_names = ['sock']
@@ -144,9 +154,52 @@ class SimpleYoloV83D(Node):
         self.max_depth_mm = 5000     # 5 m
 
         self.frame_count = 0
-        self.get_logger().info("Simple YOLOv8 3D detector started")
+        self.get_logger().info("Simple YOLOv8 3D detector started with mask support")
 
-    def callback_sync(self, detections_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
+    def extract_masks_from_tensor(self, mask_msg, target_height, target_width):
+        """Extract segmentation masks from TensorList message.
+        Returns: list of numpy arrays (one per detection), each shape (H, W) with values 0 or 255
+        """
+        if not mask_msg.tensors:
+            return []
+        
+        masks = []
+        for tensor in mask_msg.tensors:
+            # Tensor shape is typically [num_masks, 1, height, width]
+            shape_dims = tensor.shape.dims
+            if len(shape_dims) < 3:
+                continue
+                
+            # Extract dimensions
+            num_masks = int(shape_dims[0]) if len(shape_dims) > 0 else 1
+            mask_h = int(shape_dims[-2])
+            mask_w = int(shape_dims[-1])
+            
+            # Convert bytes to numpy array
+            # Assuming data_type indicates float32 (check isaac_ros_tensor_list_interfaces for type codes)
+            try:
+                data_array = np.frombuffer(bytes(tensor.data), dtype=np.float32)
+                data_array = data_array.reshape(num_masks, mask_h, mask_w)
+                
+                # Process each mask
+                for i in range(num_masks):
+                    mask = data_array[i]
+                    # Threshold to binary (MobileSAM outputs probabilities)
+                    binary_mask = (mask > 0.5).astype(np.uint8) * 255
+                    
+                    # Resize to target dimensions
+                    if mask_h != target_height or mask_w != target_width:
+                        binary_mask = cv2.resize(binary_mask, (target_width, target_height), 
+                                                interpolation=cv2.INTER_NEAREST)
+                    
+                    masks.append(binary_mask)
+            except Exception as e:
+                self.get_logger().warn(f"Failed to extract mask: {e}")
+                continue
+        
+        return masks
+
+    def callback_sync(self, detections_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg, mask_msg):
         """Enqueue synced frame immediately (non-blocking). 
             TODO: how does this help move heavy work off the executor thread
         """
@@ -156,7 +209,8 @@ class SimpleYoloV83D(Node):
                 'depth': depth_msg,
                 'color': color_msg,
                 'depth_info': depth_info_msg,
-                'yolo_info': yolo_info_msg
+                'yolo_info': yolo_info_msg,
+                'masks': mask_msg
             })
 
     def process_frame(self):
@@ -174,6 +228,7 @@ class SimpleYoloV83D(Node):
         color_msg = frame['color']
         depth_info_msg = frame['depth_info']
         yolo_info_msg = frame['yolo_info']
+        mask_msg = frame['masks']
 
         if verbose:
             self.get_logger().info(f"Frame {self.frame_count}: {len(detections_msg.detections)} detections")
@@ -208,6 +263,22 @@ class SimpleYoloV83D(Node):
 
         # Make copy for overlay
         overlay = color.copy()
+        
+        # Extract masks and apply them to overlay BEFORE drawing bboxes
+        masks = self.extract_masks_from_tensor(mask_msg, color_h, color_w)
+        if verbose:
+            self.get_logger().info(f"Extracted {len(masks)} masks")
+        
+        # Create a colored mask overlay
+        mask_overlay = np.zeros_like(overlay)
+        colors_for_masks = [
+            (255, 0, 0),    # Red
+            (0, 255, 0),    # Green
+            (0, 0, 255),    # Blue
+            (255, 255, 0),  # Cyan
+            (255, 0, 255),  # Magenta
+            (0, 255, 255),  # Yellow
+        ]
 
         # Loop over detections
         for i, det in enumerate(detections_msg.detections):
@@ -217,6 +288,13 @@ class SimpleYoloV83D(Node):
             score = float(res.hypothesis.score)
             cls_id = int(res.hypothesis.class_id)
             label = self.class_names[cls_id] if cls_id < len(self.class_names) else f"class{cls_id}"
+            
+            # Apply mask if available
+            if i < len(masks):
+                mask = masks[i]
+                color_mask = colors_for_masks[i % len(colors_for_masks)]
+                # Apply color where mask is non-zero
+                mask_overlay[mask > 0] = color_mask
 
             # get bbox pixel coordinates of detection in YOLO image space
             bbox_cx = det.bbox.center.position.x
@@ -254,8 +332,9 @@ class SimpleYoloV83D(Node):
                                       f"bbox_depth nonzero={depth_nz.size}, "
                                       f"range={np.min(depth_nz) if depth_nz.size > 0 else 0} to {np.max(depth_nz) if depth_nz.size > 0 else 0}")
 
-            # create object point cloud from bbox
-            points, colors = self.create_object_pointcloud(depth, color, x1, y1, x2, y2, fx, fy, cx, cy)
+            # create object point cloud - use mask if available, otherwise bbox
+            current_mask = masks[i] if i < len(masks) else None
+            points, colors = self.create_object_pointcloud(depth, color, x1, y1, x2, y2, fx, fy, cx, cy, mask=current_mask)
             
             # Skip this detection if no valid pointcloud
             if points is None or len(points) == 0:
@@ -286,6 +365,10 @@ class SimpleYoloV83D(Node):
                 )
             # processed += 1
 
+        # Blend mask overlay onto image (60% opacity for masks)
+        if len(masks) > 0:
+            overlay = cv2.addWeighted(overlay, 1.0, mask_overlay, 0.6, 0)
+
         # publish overlay image
         try:
             img_msg = self.br.cv2_to_imgmsg(overlay, encoding='bgr8')
@@ -294,8 +377,12 @@ class SimpleYoloV83D(Node):
         except Exception as e:
             self.get_logger().warn(f"Failed to publish overlay image: {e}")
 
-    def create_object_pointcloud(self, depth_img, color_img, x1, y1, x2, y2, fx, fy, cx, cy):
-        """Crop bbox, filter depth, return Nx3 points (meters) and Nx3 uint8 RGB colors."""
+    def create_object_pointcloud(self, depth_img, color_img, x1, y1, x2, y2, fx, fy, cx, cy, mask=None):
+        """Crop bbox, filter depth, optionally apply mask, return Nx3 points (meters) and Nx3 uint8 RGB colors.
+        
+        Args:
+            mask: Optional binary mask (H, W) with 255 for object pixels, 0 for background
+        """
         # Safe crop
         h, w = depth_img.shape
         x1c = max(0, min(w-1, x1)); x2c = max(0, min(w-1, x2))
@@ -318,9 +405,17 @@ class SimpleYoloV83D(Node):
             depth_mm = (depth_crop.astype(np.float32) * 1000.0)
 
         # Valid depth mask
-        mask = (depth_mm > self.min_depth_mm) & (depth_mm < self.max_depth_mm)
+        valid_depth_mask = (depth_mm > self.min_depth_mm) & (depth_mm < self.max_depth_mm)
 
-        if not np.any(mask):
+        # Apply segmentation mask if provided
+        if mask is not None:
+            # Crop mask to bbox region
+            mask_crop = mask[y1c:y2c+1, x1c:x2c+1]
+            # Combine depth validity with segmentation mask
+            mask_binary = (mask_crop > 0)
+            valid_depth_mask = valid_depth_mask & mask_binary
+
+        if not np.any(valid_depth_mask):
             return None, None
 
         # Use central region to compute robust median depth to avoid rim pixels
@@ -328,20 +423,28 @@ class SimpleYoloV83D(Node):
         cx0 = int(0.3 * W); cx1 = int(0.7 * W)
         cy0 = int(0.3 * H); cy1 = int(0.7 * H)
         center_patch = depth_mm[cy0:cy1, cx0:cx1]
-        valid_center = center_patch[(center_patch > self.min_depth_mm) & (center_patch < self.max_depth_mm)]
+        
+        # Also apply mask to center patch if available
+        if mask is not None:
+            mask_center = mask[y1c+cy0:y1c+cy1, x1c+cx0:x1c+cx1]
+            center_patch_masked = center_patch[(mask_center > 0)]
+            valid_center = center_patch_masked[(center_patch_masked > self.min_depth_mm) & (center_patch_masked < self.max_depth_mm)]
+        else:
+            valid_center = center_patch[(center_patch > self.min_depth_mm) & (center_patch < self.max_depth_mm)]
+        
         if valid_center.size == 0:
             # fallback to all valid
-            z_med_mm = float(np.median(depth_mm[mask]))
+            z_med_mm = float(np.median(depth_mm[valid_depth_mask]))
         else:
             z_med_mm = float(np.median(valid_center))
 
         # Keep points within +/- 50 mm of median (tunable)
         band_mm = 50.0
-        inlier_mask = mask & (np.abs(depth_mm - z_med_mm) <= band_mm)
+        inlier_mask = valid_depth_mask & (np.abs(depth_mm - z_med_mm) <= band_mm)
 
         if not np.any(inlier_mask):
             # loosen band if nothing remains
-            inlier_mask = mask
+            inlier_mask = valid_depth_mask
 
         v_idx, u_idx = np.nonzero(inlier_mask)
         if v_idx.size == 0:

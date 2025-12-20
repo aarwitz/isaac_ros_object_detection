@@ -113,8 +113,14 @@ class ObjectDetection3D(Node):
             'toothbrush'
         ]
         
+        # Throttling to prevent processing every single frame
+        self._last_process_time = 0
+        self._process_interval = 0.066  # ~15 FPS max processing
+        self._frame_count = 0  # Initialize frame counter
+        
         self.get_logger().info('🚀 3D Object Detection Node Started!')
         self.get_logger().info('📡 Waiting for synchronized detection, depth, and color data...')
+        self.get_logger().info('⚡ Throttled to ~15 FPS for performance')
 
     def pixel_to_world(self, pixel_x, pixel_y, depth_m, fx, fy, cx, cy):
         """Convert pixel coordinates + depth to 3D world coordinates"""
@@ -311,6 +317,13 @@ class ObjectDetection3D(Node):
     def process_detections(self, detection_msg, depth_msg, color_msg, depth_info_msg, yolo_info_msg):
         """Process synchronized detection, depth, and color data for 3D pose estimation"""
         try:
+            # THROTTLE: Skip frames if processing too fast
+            import time
+            current_time = time.time()
+            if current_time - self._last_process_time < self._process_interval:
+                return  # Skip this frame
+            self._last_process_time = current_time
+            
             # Convert images
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='16UC1')
             color_image = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
@@ -334,8 +347,21 @@ class ObjectDetection3D(Node):
             
             detection_data = []
             
-            # Process each detection
-            for i, detection in enumerate(detection_msg.detections):
+            # Find highest confidence detection (process only the best one)
+            best_detection = None
+            best_confidence = 0.0
+            for detection in detection_msg.detections:
+                if detection.results:
+                    conf = detection.results[0].hypothesis.score
+                    if conf > best_confidence:
+                        best_confidence = conf
+                        best_detection = detection
+            
+            if best_detection is None:
+                return
+            
+            # Process only the best detection
+            for i, detection in enumerate([best_detection]):
                 if detection.results:
                     class_id = int(detection.results[0].hypothesis.class_id)
                     confidence = detection.results[0].hypothesis.score
@@ -383,8 +409,8 @@ class ObjectDetection3D(Node):
                     bbox_w_scaled, bbox_h_scaled, fx, fy, cx, cy, margin=15
                 )
 
-                # Downsample if needed
-                MAX_POINTS = 20000
+                # Downsample if needed (reduced for better performance)
+                MAX_POINTS = 3000
                 if len(points) > MAX_POINTS:
                     idx = np.random.choice(len(points), MAX_POINTS, replace=False)
                     points = points[idx]
@@ -433,16 +459,18 @@ class ObjectDetection3D(Node):
                     f'Points: {len(points)}'
                 )
             
-            # Generate and publish full scene point cloud
-            full_scene_points, full_scene_colors = self.create_full_scene_pointcloud(
-                depth_image, color_image, fx, fy, cx, cy, 
-                downsample_factor=4, max_points=50000
-            )
-            
-            if len(full_scene_points) > 0:
-                full_scene_msg = self.create_pointcloud2_msg(full_scene_points, full_scene_colors, depth_msg.header)
-                if full_scene_msg:
-                    self.full_scene_pub.publish(full_scene_msg)
+            # Generate and publish full scene point cloud (throttled to every 10th frame for minimum bandwidth)
+            self._frame_count += 1
+            if self._frame_count % 10 == 0:  # Only every 10th frame (very sparse)
+                full_scene_points, full_scene_colors = self.create_full_scene_pointcloud(
+                    depth_image, color_image, fx, fy, cx, cy, 
+                    downsample_factor=12, max_points=3000  # Even lower density
+                )
+                
+                if len(full_scene_points) > 0:
+                    full_scene_msg = self.create_pointcloud2_msg(full_scene_points, full_scene_colors, depth_msg.header)
+                    if full_scene_msg:
+                        self.full_scene_pub.publish(full_scene_msg)
             
             # Publish debug image
             debug_msg = self.bridge.cv2_to_imgmsg(color_image, encoding='bgr8')
