@@ -1,0 +1,23 @@
+# Frozen Image Build Manifest
+Generated: Fri Dec 26 05:11:29 PM EST 2025
+
+## Host Environment
+JetPack: 
+L4T: # R36 (release), REVISION: 4.4, GCID: 41062509, BOARD: generic, EABI: aarch64, DATE: Mon Jun 16 16:07:13 UTC 2025
+# KERNEL_VARIANT: oot
+TARGET_USERSPACE_LIB_DIR=nvidia
+TARGET_USERSPACE_LIB_DIR_PATH=usr/lib/aarch64-linux-gnu/nvidia
+Kernel: 5.15.148-tegra
+Arch: aarch64
+
+## Base Image
+ID: sha256:cf02ad606862bd075a475dfe1c49603653e3c051ad3a4841a47b12167ae52f49
+Created: 2025-11-27T11:13:58.552782902-05:00
+
+## Isaac ROS Versions
+Isaac ROS: 3.2.0 (from package metadata)
+ROS: humble
+
+## Build Record
+Frozen tarball: isaac_ros_dev-aarch64-frozen.tar.gz
+Size: 13G
