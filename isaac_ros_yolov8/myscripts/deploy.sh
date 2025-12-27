@@ -16,13 +16,12 @@ fi
 # Re-use existing container if running
 if [ "$(docker ps -a --quiet --filter status=running --filter name=$CONTAINER_NAME)" ]; then
     echo "🔗 Attaching to running container: $CONTAINER_NAME"
-    docker exec -i -t -u admin --workdir /workspaces/isaac_ros-dev $CONTAINER_NAME /bin/bash
+    docker exec -i -t --workdir /workspaces/isaac_ros-dev $CONTAINER_NAME /bin/bash
     exit 0
 fi
 
 echo "🚀 Starting new container: $CONTAINER_NAME"
 docker run -it --rm \
-    --user admin \
     --privileged \
     --network host \
     --ipc=host \
