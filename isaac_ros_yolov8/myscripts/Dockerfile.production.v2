@@ -37,13 +37,14 @@ COPY isaac_ros_assets/models/ ${ISAAC_ROS_WS}/isaac_ros_assets/models/
 
 #########################
 # Vendor Your Local Workspace (pre-built packages)
-# Canonical production build: mirrors dev workflow exactly
+# Surgical build: only application packages, no test artifacts
 #########################
 COPY src/ ${ISAAC_ROS_WS}/src/
 RUN bash -lc "source /opt/ros/humble/setup.bash && \
-    rosdep update --rosdistro humble && \
     rosdep install --from-paths src --ignore-src -r -y && \
-    colcon build --symlink-install"
+    colcon build --symlink-install \
+    --packages-select isaac_ros_yolov8 cleaningrobot_bringup \
+    --cmake-args -DBUILD_TESTING=OFF"
 
 #########################
 # Runtime Configuration
