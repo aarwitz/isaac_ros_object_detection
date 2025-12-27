@@ -2,7 +2,7 @@
 Generated: Fri Dec 26 05:11:29 PM EST 2025
 
 ## Host Environment
-JetPack: 
+JetPack:
 L4T: # R36 (release), REVISION: 4.4, GCID: 41062509, BOARD: generic, EABI: aarch64, DATE: Mon Jun 16 16:07:13 UTC 2025
 # KERNEL_VARIANT: oot
 TARGET_USERSPACE_LIB_DIR=nvidia
@@ -19,5 +19,8 @@ Isaac ROS: 3.2.0 (from package metadata)
 ROS: humble
 
 ## Build Record
+Version: v1
 Frozen tarball: isaac_ros_dev-aarch64-frozen.tar.gz
 Size: 13G
+SHA256: <run: sha256sum isaac_ros_dev-aarch64-frozen.tar.gz>
+Storage: Archive in artifact registry (too large for git)

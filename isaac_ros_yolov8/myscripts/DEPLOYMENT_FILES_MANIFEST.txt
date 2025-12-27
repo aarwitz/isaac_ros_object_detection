@@ -1,7 +1,7 @@
 ================================================================================
 FROZEN DEPLOYMENT FILES MANIFEST
 ================================================================================
-Generated: 2025-12-27 14:01:08
+Generated: 2025-12-27 15:53:54
 Location: myscripts/
 ================================================================================
 
@@ -29,7 +29,7 @@ DEPLOYMENT FILES:
 4. Dockerfile.production.v2
    Description: Production container - single provenance (no apt Isaac ROS)
    Path: Dockerfile.production.v2
-   Size: 1.9KB
+   Size: 2.0KB
    Status: ✓ EXISTS
 
 5. entrypoint.sh
@@ -47,34 +47,46 @@ DEPLOYMENT FILES:
 7. IMAGE_MANIFEST.txt
    Description: Build metadata (JetPack, kernel, versions)
    Path: IMAGE_MANIFEST.txt
-   Size: 668B
+   Size: 798B
    Status: ✓ EXISTS
 
-8. cleaningrobot_bringup/launch/vision_yolov8.launch.py
+8. cleaningrobot_bringup/CMakeLists.txt
+   Description: Build configuration for cleaningrobot_bringup package
+   Path: ../../../cleaningrobot_bringup/CMakeLists.txt
+   Size: 230B
+   Status: ✓ EXISTS
+
+9. cleaningrobot_bringup/package.xml
+   Description: ROS 2 package manifest for cleaningrobot_bringup
+   Path: ../../../cleaningrobot_bringup/package.xml
+   Size: 891B
+   Status: ✓ EXISTS
+
+10. cleaningrobot_bringup/launch/vision_yolov8.launch.py
    Description: PRODUCTION: Full YOLOv8 pipeline (RealSense → inference)
    Path: ../../../cleaningrobot_bringup/launch/vision_yolov8.launch.py
    Size: 10.0KB
    Status: ✓ EXISTS
 
-9. cleaningrobot_bringup/launch/realsense_only.launch.py
+11. cleaningrobot_bringup/launch/realsense_only.launch.py
    Description: TEST 1: Camera only
    Path: ../../../cleaningrobot_bringup/launch/realsense_only.launch.py
    Size: 1.4KB
    Status: ✓ EXISTS
 
-10. cleaningrobot_bringup/launch/image_proc_only.launch.py
+12. cleaningrobot_bringup/launch/image_proc_only.launch.py
    Description: TEST 2: Image processing pipeline
    Path: ../../../cleaningrobot_bringup/launch/image_proc_only.launch.py
    Size: 3.7KB
    Status: ✓ EXISTS
 
-11. cleaningrobot_bringup/launch/tensor_rt_only.launch.py
+13. cleaningrobot_bringup/launch/tensor_rt_only.launch.py
    Description: TEST 3: TensorRT inference only
    Path: ../../../cleaningrobot_bringup/launch/tensor_rt_only.launch.py
    Size: 6.1KB
    Status: ✓ EXISTS
 
-12. isaac_ros_dev-aarch64-frozen.tar.gz
+14. isaac_ros_dev-aarch64-frozen.tar.gz
    Description: 13GB frozen base image (store separately, not in git)
    Path: ../../../../../isaac_ros_dev-aarch64-frozen.tar.gz
    Status: ✗ NOT FOUND
@@ -95,10 +107,11 @@ What to commit to git:
   ✓ All scripts, configs, launch files, and docs
   ✗ isaac_ros_dev-aarch64-frozen.tar.gz (too large, store separately)
 
-Single-provenance principle:
-  • NO apt Isaac ROS packages installed
-  • ALL Isaac ROS nodes built from source in /workspaces/isaac_ros-dev/install
-  • NO isaac_ros_examples dependency
+Frozen deployment model:
+  • Isaac ROS infrastructure frozen in base image
+  • Application packages (isaac_ros_yolov8, cleaningrobot_bringup) built from source
+  • No isaac_ros_examples dependency (prevents ABI conflicts)
+  • Deterministic builds via frozen base + selective package compilation
 
 ================================================================================
 FILE CONTENTS
@@ -162,13 +175,12 @@ fi
 # Re-use existing container if running
 if [ "$(docker ps -a --quiet --filter status=running --filter name=$CONTAINER_NAME)" ]; then
     echo "🔗 Attaching to running container: $CONTAINER_NAME"
-    docker exec -i -t -u admin --workdir /workspaces/isaac_ros-dev $CONTAINER_NAME /bin/bash
+    docker exec -i -t --workdir /workspaces/isaac_ros-dev $CONTAINER_NAME /bin/bash
     exit 0
 fi
 
 echo "🚀 Starting new container: $CONTAINER_NAME"
 docker run -it --rm \
-    --user admin \
     --privileged \
     --network host \
     --ipc=host \
@@ -265,13 +277,14 @@ COPY isaac_ros_assets/models/ ${ISAAC_ROS_WS}/isaac_ros_assets/models/
 
 #########################
 # Vendor Your Local Workspace (pre-built packages)
-# Canonical production build: mirrors dev workflow exactly
+# Surgical build: only application packages, no test artifacts
 #########################
 COPY src/ ${ISAAC_ROS_WS}/src/
 RUN bash -lc "source /opt/ros/humble/setup.bash && \
-              rosdep update && \
-              rosdep install --from-paths src --ignore-src -r -y && \
-              colcon build --symlink-install"
+    rosdep install --from-paths src --ignore-src -r -y && \
+    colcon build --symlink-install \
+    --packages-select isaac_ros_yolov8 cleaningrobot_bringup \
+    --cmake-args -DBUILD_TESTING=OFF"
 
 #########################
 # Runtime Configuration
@@ -338,7 +351,7 @@ Path: IMAGE_MANIFEST.txt
 Generated: Fri Dec 26 05:11:29 PM EST 2025
 
 ## Host Environment
-JetPack: 
+JetPack:
 L4T: # R36 (release), REVISION: 4.4, GCID: 41062509, BOARD: generic, EABI: aarch64, DATE: Mon Jun 16 16:07:13 UTC 2025
 # KERNEL_VARIANT: oot
 TARGET_USERSPACE_LIB_DIR=nvidia
@@ -355,12 +368,70 @@ Isaac ROS: 3.2.0 (from package metadata)
 ROS: humble
 
 ## Build Record
+Version: v1
 Frozen tarball: isaac_ros_dev-aarch64-frozen.tar.gz
 Size: 13G
+SHA256: <run: sha256sum isaac_ros_dev-aarch64-frozen.tar.gz>
+Storage: Archive in artifact registry (too large for git)
 
 
 ================================================================================
-FILE 8: cleaningrobot_bringup/launch/vision_yolov8.launch.py
+FILE 8: cleaningrobot_bringup/CMakeLists.txt
+================================================================================
+Description: Build configuration for cleaningrobot_bringup package
+Path: ../../../cleaningrobot_bringup/CMakeLists.txt
+--------------------------------------------------------------------------------
+
+cmake_minimum_required(VERSION 3.8)
+project(cleaningrobot_bringup)
+
+# Find dependencies
+find_package(ament_cmake REQUIRED)
+
+# Install launch files
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+ament_package()
+
+
+================================================================================
+FILE 9: cleaningrobot_bringup/package.xml
+================================================================================
+Description: ROS 2 package manifest for cleaningrobot_bringup
+Path: ../../../cleaningrobot_bringup/package.xml
+--------------------------------------------------------------------------------
+
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cleaningrobot_bringup</name>
+  <version>1.0.0</version>
+  <description>CleaningRobot Vision System Bringup Package</description>
+
+  <maintainer email="aaronhorowitz97@gmail.com">Aaron</maintainer>
+  <license>RedstoneLabs</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Runtime dependencies - single provenance from source build -->
+  <exec_depend>isaac_ros_yolov8</exec_depend>
+  <exec_depend>isaac_ros_image_proc</exec_depend>
+  <exec_depend>isaac_ros_tensor_proc</exec_depend>
+  <exec_depend>isaac_ros_tensor_rt</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+
+
+================================================================================
+FILE 10: cleaningrobot_bringup/launch/vision_yolov8.launch.py
 ================================================================================
 Description: PRODUCTION: Full YOLOv8 pipeline (RealSense → inference)
 Path: ../../../cleaningrobot_bringup/launch/vision_yolov8.launch.py
@@ -656,7 +727,7 @@ def generate_launch_description():
 
 
 ================================================================================
-FILE 9: cleaningrobot_bringup/launch/realsense_only.launch.py
+FILE 11: cleaningrobot_bringup/launch/realsense_only.launch.py
 ================================================================================
 Description: TEST 1: Camera only
 Path: ../../../cleaningrobot_bringup/launch/realsense_only.launch.py
@@ -714,7 +785,7 @@ def generate_launch_description():
 
 
 ================================================================================
-FILE 10: cleaningrobot_bringup/launch/image_proc_only.launch.py
+FILE 12: cleaningrobot_bringup/launch/image_proc_only.launch.py
 ================================================================================
 Description: TEST 2: Image processing pipeline
 Path: ../../../cleaningrobot_bringup/launch/image_proc_only.launch.py
@@ -830,7 +901,7 @@ def generate_launch_description():
 
 
 ================================================================================
-FILE 11: cleaningrobot_bringup/launch/tensor_rt_only.launch.py
+FILE 13: cleaningrobot_bringup/launch/tensor_rt_only.launch.py
 ================================================================================
 Description: TEST 3: TensorRT inference only
 Path: ../../../cleaningrobot_bringup/launch/tensor_rt_only.launch.py
