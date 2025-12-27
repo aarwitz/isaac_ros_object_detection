@@ -60,12 +60,17 @@ def combine_deployment_files():
         #     'path': 'README.md'
         # },
 
-        # Launch files (in cleaningrobot_bringup package)
-        # {
-        #     'name': 'cleaningrobot_bringup/README.md',
-        #     'description': 'Single-provenance YOLOv8 pipeline documentation',
-        #     'path': '../../../cleaningrobot_bringup/README.md'
-        # },
+        # cleaningrobot_bringup package files
+        {
+            'name': 'cleaningrobot_bringup/CMakeLists.txt',
+            'description': 'Build configuration for cleaningrobot_bringup package',
+            'path': '../../../cleaningrobot_bringup/CMakeLists.txt'
+        },
+        {
+            'name': 'cleaningrobot_bringup/package.xml',
+            'description': 'ROS 2 package manifest for cleaningrobot_bringup',
+            'path': '../../../cleaningrobot_bringup/package.xml'
+        },
         {
             'name': 'cleaningrobot_bringup/launch/vision_yolov8.launch.py',
             'description': 'PRODUCTION: Full YOLOv8 pipeline (RealSense → inference)',
@@ -151,10 +156,11 @@ def combine_deployment_files():
         outfile.write("What to commit to git:\n")
         outfile.write("  ✓ All scripts, configs, launch files, and docs\n")
         outfile.write("  ✗ isaac_ros_dev-aarch64-frozen.tar.gz (too large, store separately)\n\n")
-        outfile.write("Single-provenance principle:\n")
-        outfile.write("  • NO apt Isaac ROS packages installed\n")
-        outfile.write("  • ALL Isaac ROS nodes built from source in /workspaces/isaac_ros-dev/install\n")
-        outfile.write("  • NO isaac_ros_examples dependency\n\n")
+        outfile.write("Frozen deployment model:\n")
+        outfile.write("  • Isaac ROS infrastructure frozen in base image\n")
+        outfile.write("  • Application packages (isaac_ros_yolov8, cleaningrobot_bringup) built from source\n")
+        outfile.write("  • No isaac_ros_examples dependency (prevents ABI conflicts)\n")
+        outfile.write("  • Deterministic builds via frozen base + selective package compilation\n\n")
 
         # Write full file contents
         outfile.write("=" * 80 + "\n")
