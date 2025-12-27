@@ -1,120 +1,202 @@
 #!/usr/bin/env python3
 """
-Simple Script Combiner for Core YOLOv8 3D Grasp Detection Files
-Combines only the 4 essential scripts into a single file
+Simple Script Combiner - Lists deployment and build files
+Creates a manifest of all files used for frozen deployment
 """
 
 import os
 from datetime import datetime
 
-def combine_core_scripts():
-    """Combine the 4 core YOLOv8 3D grasp detection scripts"""
-    
-    # Define only the core script files
-    script_files = [
+def combine_deployment_files():
+    """List all deployment and build files"""
+
+    # Define deployment files
+    deployment_files = [
+        # Core deployment scripts
         {
-            'name': 'yolov8_3d_detector2.py',
-            'description': 'GGCNN detection + grasp',
-            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/yolov8_3d_detector2.py'
+            'name': 'build.sh',
+            'description': 'Build script - builds frozen container',
+            'path': 'build.sh'
         },
         {
-            'name': 'web_viewer_server_3d.py', 
-            'description': 'WebSocket server',
-            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/web_viewer_server_3d.py'
+            'name': 'deploy.sh',
+            'description': 'Deploy script - runs container with Jetson mounts',
+            'path': 'deploy.sh'
         },
+        {
+            'name': 'restore-base-image.sh',
+            'description': 'Restores frozen base image from tarball',
+            'path': 'restore-base-image.sh'
+        },
+
+        # Container definition
+        {
+            'name': 'Dockerfile.production.v2',
+            'description': 'Production container - single provenance (no apt Isaac ROS)',
+            'path': 'Dockerfile.production.v2'
+        },
+        {
+            'name': 'entrypoint.sh',
+            'description': 'Container startup script',
+            'path': 'entrypoint.sh'
+        },
+
+        # Configuration
+        {
+            'name': 'requirements.txt',
+            'description': 'Python dependencies (pinned versions)',
+            'path': 'requirements.txt'
+        },
+        {
+            'name': 'IMAGE_MANIFEST.txt',
+            'description': 'Build metadata (JetPack, kernel, versions)',
+            'path': 'IMAGE_MANIFEST.txt'
+        },
+
+        # Documentation
         # {
-        #     'name': 'run_robot.py',
-        #     'description': 'Robot control interface',
-        #     'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/run_robot.py'
+        #     'name': 'README.md',
+        #     'description': 'Quick start guide for frozen deployment',
+        #     'path': 'README.md'
+        # },
+
+        # Launch files (in cleaningrobot_bringup package)
+        # {
+        #     'name': 'cleaningrobot_bringup/README.md',
+        #     'description': 'Single-provenance YOLOv8 pipeline documentation',
+        #     'path': '../../../cleaningrobot_bringup/README.md'
         # },
         {
-            'name': 'viewer.html',
-            'description': 'Web interface', 
-            'path': '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/viewer.html'
+            'name': 'cleaningrobot_bringup/launch/vision_yolov8.launch.py',
+            'description': 'PRODUCTION: Full YOLOv8 pipeline (RealSense → inference)',
+            'path': '../../../cleaningrobot_bringup/launch/vision_yolov8.launch.py'
+        },
+        {
+            'name': 'cleaningrobot_bringup/launch/realsense_only.launch.py',
+            'description': 'TEST 1: Camera only',
+            'path': '../../../cleaningrobot_bringup/launch/realsense_only.launch.py'
+        },
+        {
+            'name': 'cleaningrobot_bringup/launch/image_proc_only.launch.py',
+            'description': 'TEST 2: Image processing pipeline',
+            'path': '../../../cleaningrobot_bringup/launch/image_proc_only.launch.py'
+        },
+        {
+            'name': 'cleaningrobot_bringup/launch/tensor_rt_only.launch.py',
+            'description': 'TEST 3: TensorRT inference only',
+            'path': '../../../cleaningrobot_bringup/launch/tensor_rt_only.launch.py'
+        },
+
+        # Base image (stored separately)
+        {
+            'name': 'isaac_ros_dev-aarch64-frozen.tar.gz',
+            'description': '13GB frozen base image (store separately, not in git)',
+            'path': '../../../../../isaac_ros_dev-aarch64-frozen.tar.gz'
         }
     ]
-    
+
     # Output file
-    output_file = '/workspaces/isaac_ros-dev/src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/core_scripts_combined.txt'
-    
-    # Generate combined file
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_file = os.path.join(script_dir, 'DEPLOYMENT_FILES_MANIFEST.txt')
+
+    # Generate manifest
     with open(output_file, 'w') as outfile:
         # Write header
-        outfile.write("=" * 60 + "\n")
-        outfile.write("CORE YOLOV8 3D GRASP DETECTION SCRIPTS\n")
-        outfile.write("=" * 60 + "\n")
+        outfile.write("=" * 80 + "\n")
+        outfile.write("FROZEN DEPLOYMENT FILES MANIFEST\n")
+        outfile.write("=" * 80 + "\n")
         outfile.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        outfile.write("=" * 60 + "\n\n")
-        
-        # Write table of contents
-        outfile.write("CONTENTS:\n")
-        outfile.write("-" * 20 + "\n")
-        for i, script in enumerate(script_files, 1):
-            outfile.write(f"{i}. {script['name']} ({script['description']})\n")
-        outfile.write("\n" + "=" * 60 + "\n\n")
-        
-        # Process each script file
-        for i, script in enumerate(script_files, 1):
-            print(f"Processing {script['name']}...")
-            
-            # Write section header
-            outfile.write("=" * 60 + "\n")
-            outfile.write(f"{i}. {script['name'].upper()}\n")
-            outfile.write("=" * 60 + "\n")
-            outfile.write(f"Description: {script['description']}\n")
-            outfile.write("-" * 60 + "\n\n")
-            
-            # Read and write file content
+        outfile.write(f"Location: myscripts/\n")
+        outfile.write("=" * 80 + "\n\n")
+
+        # Write file list
+        outfile.write("DEPLOYMENT FILES:\n")
+        outfile.write("-" * 80 + "\n\n")
+
+        # Write file list with details
+        for i, file_info in enumerate(deployment_files, 1):
+            outfile.write(f"{i}. {file_info['name']}\n")
+            outfile.write(f"   Description: {file_info['description']}\n")
+            outfile.write(f"   Path: {file_info['path']}\n")
+
+            # Check if file exists
+            file_path = os.path.join(script_dir, file_info['path'])
+            if os.path.exists(file_path):
+                if os.path.isfile(file_path):
+                    size = os.path.getsize(file_path)
+                    if size > 1024*1024:
+                        outfile.write(f"   Size: {size/(1024*1024*1024):.1f}GB\n")
+                    elif size > 1024:
+                        outfile.write(f"   Size: {size/1024:.1f}KB\n")
+                    else:
+                        outfile.write(f"   Size: {size}B\n")
+                    outfile.write(f"   Status: ✓ EXISTS\n")
+                else:
+                    outfile.write(f"   Status: ✓ EXISTS (directory)\n")
+            else:
+                outfile.write(f"   Status: ✗ NOT FOUND\n")
+            outfile.write("\n")
+
+        # Write summary
+        outfile.write("=" * 80 + "\n")
+        outfile.write("SUMMARY\n")
+        outfile.write("=" * 80 + "\n\n")
+        outfile.write("Essential files for frozen deployment:\n")
+        outfile.write("  • Build/Deploy: build.sh, deploy.sh, restore-base-image.sh\n")
+        outfile.write("  • Container: Dockerfile.production.v2, entrypoint.sh\n")
+        outfile.write("  • Config: requirements.txt, IMAGE_MANIFEST.txt\n")
+        outfile.write("  • Launch Files: vision_yolov8.launch.py + 3 test files\n")
+        outfile.write("  • Docs: README.md (myscripts + cleaningrobot_bringup)\n")
+        outfile.write("  • Base Image: isaac_ros_dev-aarch64-frozen.tar.gz (13GB)\n\n")
+        outfile.write("What to commit to git:\n")
+        outfile.write("  ✓ All scripts, configs, launch files, and docs\n")
+        outfile.write("  ✗ isaac_ros_dev-aarch64-frozen.tar.gz (too large, store separately)\n\n")
+        outfile.write("Single-provenance principle:\n")
+        outfile.write("  • NO apt Isaac ROS packages installed\n")
+        outfile.write("  • ALL Isaac ROS nodes built from source in /workspaces/isaac_ros-dev/install\n")
+        outfile.write("  • NO isaac_ros_examples dependency\n\n")
+
+        # Write full file contents
+        outfile.write("=" * 80 + "\n")
+        outfile.write("FILE CONTENTS\n")
+        outfile.write("=" * 80 + "\n\n")
+
+        for i, file_info in enumerate(deployment_files, 1):
+            # Skip the tarball
+            if file_info['name'] == 'isaac_ros_dev-aarch64-frozen.tar.gz':
+                continue
+
+            file_path = os.path.join(script_dir, file_info['path'])
+
+            outfile.write("=" * 80 + "\n")
+            outfile.write(f"FILE {i}: {file_info['name']}\n")
+            outfile.write("=" * 80 + "\n")
+            outfile.write(f"Description: {file_info['description']}\n")
+            outfile.write(f"Path: {file_info['path']}\n")
+            outfile.write("-" * 80 + "\n\n")
+
             try:
-                with open(script['path'], 'r', encoding='utf-8') as infile:
-                    content = infile.read()
-                    outfile.write(content)
-                    
-                    # Ensure proper spacing between files
-                    if not content.endswith('\n'):
-                        outfile.write('\n')
-                    outfile.write('\n\n')
-                    
-                print(f"✅ Added {script['name']}")
-                
-            except FileNotFoundError:
-                error_msg = f"❌ File not found: {script['path']}\n"
-                outfile.write(error_msg)
-                print(error_msg.strip())
-                
+                if os.path.isfile(file_path):
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        outfile.write(content)
+                        if not content.endswith('\n'):
+                            outfile.write('\n')
+                    print(f"✓ Added {file_info['name']}")
+                elif os.path.isdir(file_path):
+                    outfile.write(f"[This is a directory - contents not shown]\n")
+                    print(f"⊘ Skipped directory {file_info['name']}")
+                else:
+                    outfile.write(f"[File not found]\n")
+                    print(f"✗ Not found: {file_info['name']}")
             except Exception as e:
-                error_msg = f"❌ Error reading {script['name']}: {str(e)}\n"
-                outfile.write(error_msg)
-                print(error_msg.strip())
-        
-        # Write footer
-        outfile.write("=" * 60 + "\n")
-        outfile.write("END OF CORE SCRIPTS\n")
-        outfile.write("=" * 60 + "\n")
-    
-    print(f"\n✅ Created: {output_file}")
-    
-    # Display file size
-    try:
-        file_size = os.path.getsize(output_file)
-        print(f"📊 Size: {file_size:,} bytes ({file_size/1024:.1f} KB)")
-    except:
-        pass
-    
+                outfile.write(f"[Error reading file: {e}]\n")
+                print(f"✗ Error reading {file_info['name']}: {e}")
+
+            outfile.write("\n\n")
+
+    print(f"\n✓ Manifest created: {output_file}")
     return output_file
 
-def main():
-    """Main function"""
-    print("🚀 Core YOLOv8 3D Grasp Scripts Combiner")
-    print("=" * 40)
-    
-    try:
-        output_file = combine_core_scripts()
-    except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        return 1
-    
-    return 0
-
 if __name__ == "__main__":
-    exit(main())
+    combine_deployment_files()

@@ -1,0 +1,59 @@
+# Production Dockerfile for CleaningRobot Vision System
+# Uses frozen base image with immutable tag
+
+# FROZEN: Immutable base image
+# Compatible with: L4T R36.4.4, Kernel 5.15.148-tegra
+# Contains: Isaac ROS 3.2.0, ROS Humble, all dependencies
+FROM isaac_ros_dev-aarch64:r36.4.4_ir3.2_frozen
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=humble
+ENV ISAAC_ROS_WS=/workspaces/isaac_ros-dev
+
+WORKDIR ${ISAAC_ROS_WS}
+
+#########################
+# Isaac ROS runtime is frozen inside the base image and never rebuilt.
+# Only application-level packages are built from source.
+#########################
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     ros-humble-isaac-ros-gxf \
+#     && rm -rf /var/lib/apt/lists/*
+
+#########################
+# Additional Python Dependencies (pinned versions)
+#########################
+COPY src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+    pip install --no-cache-dir \
+    debugpy==1.8.0 \
+    ipython==8.18.1 \
+    ipdb==0.13.13
+
+#########################
+# Vendor Models (treat as immutable artifacts)
+#########################
+COPY isaac_ros_assets/models/ ${ISAAC_ROS_WS}/isaac_ros_assets/models/
+
+#########################
+# Vendor Your Local Workspace (pre-built packages)
+# Canonical production build: mirrors dev workflow exactly
+#########################
+COPY src/ ${ISAAC_ROS_WS}/src/
+RUN bash -lc "source /opt/ros/humble/setup.bash && \
+    rosdep update --rosdistro humble && \
+    rosdep install --from-paths src --ignore-src -r -y && \
+    colcon build --symlink-install"
+
+#########################
+# Runtime Configuration
+#########################
+ENV PYTHONUNBUFFERED=1
+ENV ROS_DOMAIN_ID=0
+
+# Entrypoint
+COPY src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

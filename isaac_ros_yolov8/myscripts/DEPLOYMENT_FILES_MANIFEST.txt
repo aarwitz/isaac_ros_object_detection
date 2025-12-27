@@ -1,0 +1,1008 @@
+================================================================================
+FROZEN DEPLOYMENT FILES MANIFEST
+================================================================================
+Generated: 2025-12-27 14:01:08
+Location: myscripts/
+================================================================================
+
+DEPLOYMENT FILES:
+--------------------------------------------------------------------------------
+
+1. build.sh
+   Description: Build script - builds frozen container
+   Path: build.sh
+   Size: 727B
+   Status: ✓ EXISTS
+
+2. deploy.sh
+   Description: Deploy script - runs container with Jetson mounts
+   Path: deploy.sh
+   Size: 1.5KB
+   Status: ✓ EXISTS
+
+3. restore-base-image.sh
+   Description: Restores frozen base image from tarball
+   Path: restore-base-image.sh
+   Size: 405B
+   Status: ✓ EXISTS
+
+4. Dockerfile.production.v2
+   Description: Production container - single provenance (no apt Isaac ROS)
+   Path: Dockerfile.production.v2
+   Size: 1.9KB
+   Status: ✓ EXISTS
+
+5. entrypoint.sh
+   Description: Container startup script
+   Path: entrypoint.sh
+   Size: 117B
+   Status: ✓ EXISTS
+
+6. requirements.txt
+   Description: Python dependencies (pinned versions)
+   Path: requirements.txt
+   Size: 494B
+   Status: ✓ EXISTS
+
+7. IMAGE_MANIFEST.txt
+   Description: Build metadata (JetPack, kernel, versions)
+   Path: IMAGE_MANIFEST.txt
+   Size: 668B
+   Status: ✓ EXISTS
+
+8. cleaningrobot_bringup/launch/vision_yolov8.launch.py
+   Description: PRODUCTION: Full YOLOv8 pipeline (RealSense → inference)
+   Path: ../../../cleaningrobot_bringup/launch/vision_yolov8.launch.py
+   Size: 10.0KB
+   Status: ✓ EXISTS
+
+9. cleaningrobot_bringup/launch/realsense_only.launch.py
+   Description: TEST 1: Camera only
+   Path: ../../../cleaningrobot_bringup/launch/realsense_only.launch.py
+   Size: 1.4KB
+   Status: ✓ EXISTS
+
+10. cleaningrobot_bringup/launch/image_proc_only.launch.py
+   Description: TEST 2: Image processing pipeline
+   Path: ../../../cleaningrobot_bringup/launch/image_proc_only.launch.py
+   Size: 3.7KB
+   Status: ✓ EXISTS
+
+11. cleaningrobot_bringup/launch/tensor_rt_only.launch.py
+   Description: TEST 3: TensorRT inference only
+   Path: ../../../cleaningrobot_bringup/launch/tensor_rt_only.launch.py
+   Size: 6.1KB
+   Status: ✓ EXISTS
+
+12. isaac_ros_dev-aarch64-frozen.tar.gz
+   Description: 13GB frozen base image (store separately, not in git)
+   Path: ../../../../../isaac_ros_dev-aarch64-frozen.tar.gz
+   Status: ✗ NOT FOUND
+
+================================================================================
+SUMMARY
+================================================================================
+
+Essential files for frozen deployment:
+  • Build/Deploy: build.sh, deploy.sh, restore-base-image.sh
+  • Container: Dockerfile.production.v2, entrypoint.sh
+  • Config: requirements.txt, IMAGE_MANIFEST.txt
+  • Launch Files: vision_yolov8.launch.py + 3 test files
+  • Docs: README.md (myscripts + cleaningrobot_bringup)
+  • Base Image: isaac_ros_dev-aarch64-frozen.tar.gz (13GB)
+
+What to commit to git:
+  ✓ All scripts, configs, launch files, and docs
+  ✗ isaac_ros_dev-aarch64-frozen.tar.gz (too large, store separately)
+
+Single-provenance principle:
+  • NO apt Isaac ROS packages installed
+  • ALL Isaac ROS nodes built from source in /workspaces/isaac_ros-dev/install
+  • NO isaac_ros_examples dependency
+
+================================================================================
+FILE CONTENTS
+================================================================================
+
+================================================================================
+FILE 1: build.sh
+================================================================================
+Description: Build script - builds frozen container
+Path: build.sh
+--------------------------------------------------------------------------------
+
+#!/bin/bash
+# Build script - checks for base image first
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+
+# Restore base image if missing
+if [[ -z "$(docker images -q isaac_ros_dev-aarch64:r36.4.4_ir3.2_frozen)" ]]; then
+    echo "⚠️  Base image missing, restoring from backup..."
+    cd "$SCRIPT_DIR"
+    ./restore-base-image.sh
+fi
+
+IMAGE_NAME="cleaningrobot-vision"
+
+echo "🔨 Building frozen container image..."
+cd "$WORKSPACE_ROOT"
+docker build -f src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/Dockerfile.production.v2 -t ${IMAGE_NAME}:latest .
+echo ""
+echo "✅ Build complete! Image: ${IMAGE_NAME}:latest"
+echo ""
+echo "Run with: ./deploy.sh"
+
+
+================================================================================
+FILE 2: deploy.sh
+================================================================================
+Description: Deploy script - runs container with Jetson mounts
+Path: deploy.sh
+--------------------------------------------------------------------------------
+
+#!/bin/bash
+# Frozen deployment - run the container
+
+set -e
+
+IMAGE_NAME="cleaningrobot-vision"
+CONTAINER_NAME="isaac_ros_dev-aarch64-container"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+
+# Remove any exited containers
+if [ "$(docker ps -a --quiet --filter status=exited --filter name=$CONTAINER_NAME)" ]; then
+    docker rm $CONTAINER_NAME > /dev/null
+fi
+
+# Re-use existing container if running
+if [ "$(docker ps -a --quiet --filter status=running --filter name=$CONTAINER_NAME)" ]; then
+    echo "🔗 Attaching to running container: $CONTAINER_NAME"
+    docker exec -i -t -u admin --workdir /workspaces/isaac_ros-dev $CONTAINER_NAME /bin/bash
+    exit 0
+fi
+
+echo "🚀 Starting new container: $CONTAINER_NAME"
+docker run -it --rm \
+    --user admin \
+    --privileged \
+    --network host \
+    --ipc=host \
+    --runtime nvidia \
+    --name "$CONTAINER_NAME" \
+    -e NVIDIA_VISIBLE_DEVICES=all \
+    -e NVIDIA_DRIVER_CAPABILITIES=all \
+    -e ROS_DOMAIN_ID=0 \
+    -e DISPLAY=$DISPLAY \
+    -e ISAAC_ROS_WS=/workspaces/isaac_ros-dev \
+    -v "$REPO_ROOT/isaac_ros_assets:/workspaces/isaac_ros-dev/isaac_ros_assets" \
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v /etc/localtime:/etc/localtime:ro \
+    -v /dev:/dev \
+    -v /usr/bin/tegrastats:/usr/bin/tegrastats \
+    -v /usr/lib/aarch64-linux-gnu/tegra:/usr/lib/aarch64-linux-gnu/tegra \
+    -v /usr/src/jetson_multimedia_api:/usr/src/jetson_multimedia_api \
+    --pid=host \
+    --workdir /workspaces/isaac_ros-dev \
+    ${IMAGE_NAME}:latest \
+    /bin/bash --login
+
+
+
+
+
+================================================================================
+FILE 3: restore-base-image.sh
+================================================================================
+Description: Restores frozen base image from tarball
+Path: restore-base-image.sh
+--------------------------------------------------------------------------------
+
+#!/bin/bash
+# Restore frozen base image if it's missing
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [[ -z "$(docker images -q isaac_ros_dev-aarch64:r36.4.4_ir3.2_frozen)" ]]; then
+    echo "🔄 Restoring frozen base image..."
+    gunzip -c isaac_ros_dev-aarch64-frozen.tar.gz | docker load
+    echo "✅ Base image restored"
+else
+    echo "✅ Base image already exists"
+fi
+
+
+================================================================================
+FILE 4: Dockerfile.production.v2
+================================================================================
+Description: Production container - single provenance (no apt Isaac ROS)
+Path: Dockerfile.production.v2
+--------------------------------------------------------------------------------
+
+# Production Dockerfile for CleaningRobot Vision System
+# Uses frozen base image with immutable tag
+
+# FROZEN: Immutable base image
+# Compatible with: L4T R36.4.4, Kernel 5.15.148-tegra
+# Contains: Isaac ROS 3.2.0, ROS Humble, all dependencies
+FROM isaac_ros_dev-aarch64:r36.4.4_ir3.2_frozen
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=humble
+ENV ISAAC_ROS_WS=/workspaces/isaac_ros-dev
+
+WORKDIR ${ISAAC_ROS_WS}
+
+#########################
+# Isaac ROS runtime is frozen inside the base image and never rebuilt.
+# Only application-level packages are built from source.
+#########################
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     ros-humble-isaac-ros-gxf \
+#     && rm -rf /var/lib/apt/lists/*
+
+#########################
+# Additional Python Dependencies (pinned versions)
+#########################
+COPY src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+    pip install --no-cache-dir \
+    debugpy==1.8.0 \
+    ipython==8.18.1 \
+    ipdb==0.13.13
+
+#########################
+# Vendor Models (treat as immutable artifacts)
+#########################
+COPY isaac_ros_assets/models/ ${ISAAC_ROS_WS}/isaac_ros_assets/models/
+
+#########################
+# Vendor Your Local Workspace (pre-built packages)
+# Canonical production build: mirrors dev workflow exactly
+#########################
+COPY src/ ${ISAAC_ROS_WS}/src/
+RUN bash -lc "source /opt/ros/humble/setup.bash && \
+              rosdep update && \
+              rosdep install --from-paths src --ignore-src -r -y && \
+              colcon build --symlink-install"
+
+#########################
+# Runtime Configuration
+#########################
+ENV PYTHONUNBUFFERED=1
+ENV ROS_DOMAIN_ID=0
+
+# Entrypoint
+COPY src/isaac_ros_object_detection/isaac_ros_yolov8/myscripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
+
+
+================================================================================
+FILE 5: entrypoint.sh
+================================================================================
+Description: Container startup script
+Path: entrypoint.sh
+--------------------------------------------------------------------------------
+
+#!/bin/bash
+set -e
+
+source /opt/ros/humble/setup.bash
+source /workspaces/isaac_ros-dev/install/setup.bash
+
+exec "$@"
+
+
+================================================================================
+FILE 6: requirements.txt
+================================================================================
+Description: Python dependencies (pinned versions)
+Path: requirements.txt
+--------------------------------------------------------------------------------
+
+# Python Dependencies - Production Locked Versions
+# NO floating versions - everything pinned exactly
+# Generated: 2025-12-20
+# Python 3.10 (ROS Humble base)
+
+# Core dependencies (EXACT versions)
+numpy==1.24.4
+opencv-python==4.8.1.78
+websockets==12.0
+
+# ROS Python packages (installed via apt in Dockerfile, listed for documentation)
+# rclpy - from ros-humble-rclpy
+# cv-bridge - from ros-humble-cv-bridge
+# sensor-msgs - from ros-humble-sensor-msgs
+# vision-msgs - from ros-humble-vision-msgs
+
+
+================================================================================
+FILE 7: IMAGE_MANIFEST.txt
+================================================================================
+Description: Build metadata (JetPack, kernel, versions)
+Path: IMAGE_MANIFEST.txt
+--------------------------------------------------------------------------------
+
+# Frozen Image Build Manifest
+Generated: Fri Dec 26 05:11:29 PM EST 2025
+
+## Host Environment
+JetPack: 
+L4T: # R36 (release), REVISION: 4.4, GCID: 41062509, BOARD: generic, EABI: aarch64, DATE: Mon Jun 16 16:07:13 UTC 2025
+# KERNEL_VARIANT: oot
+TARGET_USERSPACE_LIB_DIR=nvidia
+TARGET_USERSPACE_LIB_DIR_PATH=usr/lib/aarch64-linux-gnu/nvidia
+Kernel: 5.15.148-tegra
+Arch: aarch64
+
+## Base Image
+ID: sha256:cf02ad606862bd075a475dfe1c49603653e3c051ad3a4841a47b12167ae52f49
+Created: 2025-11-27T11:13:58.552782902-05:00
+
+## Isaac ROS Versions
+Isaac ROS: 3.2.0 (from package metadata)
+ROS: humble
+
+## Build Record
+Frozen tarball: isaac_ros_dev-aarch64-frozen.tar.gz
+Size: 13G
+
+
+================================================================================
+FILE 8: cleaningrobot_bringup/launch/vision_yolov8.launch.py
+================================================================================
+Description: PRODUCTION: Full YOLOv8 pipeline (RealSense → inference)
+Path: ../../../cleaningrobot_bringup/launch/vision_yolov8.launch.py
+--------------------------------------------------------------------------------
+
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+# Copyright (c) 2025 CleaningRobot Project. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+PRODUCTION: Complete YOLOv8 Vision Pipeline
+Single-provenance frozen deployment with RealSense D435i.
+
+Pipeline:
+  RealSense D435i Camera
+    ↓
+  Rectify (1920x1080)
+    ↓
+  Resize (640x640)
+    ↓
+  Image Format Convert (RGB8)
+    ↓
+  DNN Encoder (ImageToTensor → Normalize → Interleaved→Planar → Reshape)
+    ↓
+  TensorRT Inference (YOLOv8)
+    ↓
+  YOLOv8 Decoder
+    ↓
+  Detections Output
+
+All nodes from /workspaces/isaac_ros-dev/install (single provenance).
+NO isaac_ros_examples. NO mixed ABIs.
+"""
+
+import os
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.descriptions import ComposableNode
+from launch_ros.substitutions import FindPackageShare
+
+
+def generate_launch_description():
+    """
+    Complete YOLOv8 detection pipeline.
+    Single composable container for NITROS zero-copy.
+    """
+
+    # Model paths
+    workspace_root = os.environ.get('ISAAC_ROS_WS', '/workspaces/isaac_ros-dev')
+    model_file_path = os.path.join(workspace_root, 'isaac_ros_assets/models/yolov8/socks2.onnx')
+    engine_file_path = os.path.join(workspace_root, 'isaac_ros_assets/models/yolov8/socks2.plan')
+
+    # Launch arguments
+    launch_args = [
+        DeclareLaunchArgument(
+            'network_image_width',
+            default_value='640',
+            description='Width for YOLOv8 input'
+        ),
+        DeclareLaunchArgument(
+            'network_image_height',
+            default_value='640',
+            description='Height for YOLOv8 input'
+        ),
+        DeclareLaunchArgument(
+            'confidence_threshold',
+            default_value='0.83',
+            description='YOLOv8 confidence threshold'
+        ),
+        DeclareLaunchArgument(
+            'nms_threshold',
+            default_value='0.45',
+            description='NMS IOU threshold'
+        ),
+        DeclareLaunchArgument(
+            'model_file_path',
+            default_value=model_file_path,
+            description='Absolute path to ONNX model'
+        ),
+        DeclareLaunchArgument(
+            'engine_file_path',
+            default_value=engine_file_path,
+            description='Absolute path to TensorRT engine'
+        ),
+    ]
+
+    network_image_width = LaunchConfiguration('network_image_width')
+    network_image_height = LaunchConfiguration('network_image_height')
+    confidence_threshold = LaunchConfiguration('confidence_threshold')
+    nms_threshold = LaunchConfiguration('nms_threshold')
+    model_path = LaunchConfiguration('model_file_path')
+    engine_path = LaunchConfiguration('engine_file_path')
+
+    # RealSense camera (separate process for stability)
+    realsense_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare('realsense2_camera'),
+                'launch',
+                'rs_launch.py'
+            ])
+        ]),
+        launch_arguments={
+            'enable_depth': 'true',
+            'enable_color': 'true',
+            'align_depth.enable': 'true',
+            'pointcloud.enable': 'false',
+            'enable_infra1': 'false',
+            'enable_infra2': 'false',
+        }.items()
+    )
+
+    # Vision pipeline container (all Isaac ROS nodes in one container)
+    vision_container = ComposableNodeContainer(
+        name='vision_container',
+        namespace='',
+        package='rclcpp_components',
+        executable='component_container_mt',
+        composable_node_descriptions=[
+            # 1. Rectify raw camera image
+            ComposableNode(
+                name='rectify_node',
+                package='isaac_ros_image_proc',
+                plugin='nvidia::isaac_ros::image_proc::RectifyNode',
+                parameters=[{
+                    'output_width': 1920,
+                    'output_height': 1080,
+                }],
+                remappings=[
+                    ('image_raw', '/camera/color/image_raw'),
+                    ('camera_info', '/camera/color/camera_info'),
+                    ('image_rect', '/image_rect'),
+                    ('camera_info_rect', '/camera_info_rect'),
+                ]
+            ),
+
+            # 2. Resize to network input size
+            ComposableNode(
+                name='resize_node',
+                package='isaac_ros_image_proc',
+                plugin='nvidia::isaac_ros::image_proc::ResizeNode',
+                parameters=[{
+                    'output_width': network_image_width,
+                    'output_height': network_image_height,
+                    'keep_aspect_ratio': False,
+                    'encoding_desired': 'rgb8',
+                }],
+                remappings=[
+                    ('image', '/image_rect'),
+                    ('camera_info', '/camera_info_rect'),
+                    ('resize/image', '/resize/image'),
+                    ('resize/camera_info', '/resize/camera_info'),
+                ]
+            ),
+
+            # 3. Image format converter
+            ComposableNode(
+                name='image_format_node',
+                package='isaac_ros_image_proc',
+                plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
+                parameters=[{
+                    'encoding_desired': 'rgb8',
+                    'image_width': network_image_width,
+                    'image_height': network_image_height,
+                }],
+                remappings=[
+                    ('image_raw', '/resize/image'),
+                    ('image', '/image_rgb'),
+                ]
+            ),
+
+            # 4. Image to tensor (DNN encoder chain starts)
+            ComposableNode(
+                name='image_to_tensor_node',
+                package='isaac_ros_tensor_proc',
+                plugin='nvidia::isaac_ros::dnn_inference::ImageToTensorNode',
+                parameters=[{
+                    'scale': False,
+                    'tensor_name': 'image',
+                }],
+                remappings=[
+                    ('image', '/image_rgb'),
+                    ('tensor', '/tensor_image'),
+                ]
+            ),
+
+            # 5. Normalize tensor (0-255 → 0.0-1.0)
+            ComposableNode(
+                name='normalize_node',
+                package='isaac_ros_tensor_proc',
+                plugin='nvidia::isaac_ros::dnn_inference::ImageTensorNormalizeNode',
+                parameters=[{
+                    'mean': [0.0, 0.0, 0.0],
+                    'stddev': [255.0, 255.0, 255.0],
+                }],
+                remappings=[
+                    ('tensor', '/tensor_image'),
+                    ('normalized_tensor', '/tensor_normalized'),
+                ]
+            ),
+
+            # 6. Interleaved to planar (HWC → CHW)
+            ComposableNode(
+                name='interleaved_to_planar_node',
+                package='isaac_ros_tensor_proc',
+                plugin='nvidia::isaac_ros::dnn_inference::InterleavedToPlanarNode',
+                remappings=[
+                    ('interleaved_tensor', '/tensor_normalized'),
+                    ('planar_tensor', '/tensor_planar'),
+                ]
+            ),
+
+            # 7. Reshape for TensorRT (add batch dimension)
+            ComposableNode(
+                name='reshape_node',
+                package='isaac_ros_tensor_proc',
+                plugin='nvidia::isaac_ros::dnn_inference::ReshapeNode',
+                parameters=[{
+                    'output_tensor_name': 'input_tensor',
+                    'input_tensor_shape': [640, 640, 3],
+                    'output_tensor_shape': [1, 3, 640, 640],
+                }],
+                remappings=[
+                    ('tensor', '/tensor_planar'),
+                    ('reshaped_tensor', '/tensor_pub'),
+                ]
+            ),
+
+            # 8. TensorRT inference
+            ComposableNode(
+                name='tensor_rt',
+                package='isaac_ros_tensor_rt',
+                plugin='nvidia::isaac_ros::dnn_inference::TensorRTNode',
+                parameters=[{
+                    'model_file_path': model_path,
+                    'engine_file_path': engine_path,
+                    'input_tensor_names': ['input_tensor'],
+                    'input_binding_names': ['images'],
+                    'output_tensor_names': ['output_tensor'],
+                    'output_binding_names': ['output0'],
+                    'verbose': False,
+                    'force_engine_update': False,
+                }],
+                remappings=[
+                    ('tensor_pub', '/tensor_pub'),
+                    ('tensor_sub', '/tensor_sub'),
+                ]
+            ),
+
+            # 9. YOLOv8 decoder
+            ComposableNode(
+                name='yolov8_decoder_node',
+                package='isaac_ros_yolov8',
+                plugin='nvidia::isaac_ros::yolov8::YoloV8DecoderNode',
+                parameters=[{
+                    'confidence_threshold': confidence_threshold,
+                    'nms_threshold': nms_threshold,
+                }],
+                remappings=[
+                    ('tensor_sub', '/tensor_sub'),
+                    ('detections_output', '/detections'),
+                ]
+            ),
+        ],
+        output='screen',
+        arguments=['--ros-args', '--log-level', 'INFO'],
+    )
+
+    # Optional: Visualizer node (separate process)
+    visualizer_node = Node(
+        package='isaac_ros_yolov8',
+        executable='isaac_ros_yolov8_visualizer.py',
+        name='yolov8_visualizer',
+        remappings=[
+            ('image', '/resize/image'),
+            ('detections', '/detections'),
+        ],
+        output='screen',
+    )
+
+    return LaunchDescription(
+        launch_args + [
+            realsense_launch,
+            vision_container,
+            visualizer_node,
+        ]
+    )
+
+
+================================================================================
+FILE 9: cleaningrobot_bringup/launch/realsense_only.launch.py
+================================================================================
+Description: TEST 1: Camera only
+Path: ../../../cleaningrobot_bringup/launch/realsense_only.launch.py
+--------------------------------------------------------------------------------
+
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+# Copyright (c) 2025 CleaningRobot Project. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+INCREMENTAL TEST 1: RealSense Camera Only
+Validates that the RealSense D435i publishes image and depth data.
+
+Expected topics:
+  /camera/color/image_raw
+  /camera/depth/image_rect_raw
+  /camera/aligned_depth_to_color/image_raw
+"""
+
+from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
+
+
+def generate_launch_description():
+    """Launch RealSense camera only for basic validation."""
+
+    realsense_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare('realsense2_camera'),
+                'launch',
+                'rs_launch.py'
+            ])
+        ]),
+        launch_arguments={
+            'enable_depth': 'true',
+            'enable_color': 'true',
+            'align_depth.enable': 'true',
+            'pointcloud.enable': 'false',
+            'enable_infra1': 'false',
+            'enable_infra2': 'false',
+            'enable_gyro': 'false',
+            'enable_accel': 'false',
+        }.items()
+    )
+
+    return LaunchDescription([
+        realsense_launch,
+    ])
+
+
+================================================================================
+FILE 10: cleaningrobot_bringup/launch/image_proc_only.launch.py
+================================================================================
+Description: TEST 2: Image processing pipeline
+Path: ../../../cleaningrobot_bringup/launch/image_proc_only.launch.py
+--------------------------------------------------------------------------------
+
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+# Copyright (c) 2025 CleaningRobot Project. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+INCREMENTAL TEST 2: Image Processing Pipeline
+Tests rectification and preprocessing without inference.
+
+Input: /camera/color/image_raw
+Output: /resize/image (640x640 RGB8)
+"""
+
+from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
+from launch_ros.substitutions import FindPackageShare
+
+
+def generate_launch_description():
+    """Launch RealSense + image preprocessing pipeline."""
+
+    # Launch arguments
+    network_image_width_arg = DeclareLaunchArgument(
+        'network_image_width',
+        default_value='640',
+        description='Width of the image for the network'
+    )
+    network_image_height_arg = DeclareLaunchArgument(
+        'network_image_height',
+        default_value='640',
+        description='Height of the image for the network'
+    )
+
+    network_image_width = LaunchConfiguration('network_image_width')
+    network_image_height = LaunchConfiguration('network_image_height')
+
+    # RealSense camera
+    realsense_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare('realsense2_camera'),
+                'launch',
+                'rs_launch.py'
+            ])
+        ]),
+        launch_arguments={
+            'enable_depth': 'true',
+            'enable_color': 'true',
+            'align_depth.enable': 'true',
+            'pointcloud.enable': 'false',
+        }.items()
+    )
+
+    # Image processing container with rectification and resize
+    image_proc_container = ComposableNodeContainer(
+        name='image_proc_container',
+        namespace='',
+        package='rclcpp_components',
+        executable='component_container_mt',
+        composable_node_descriptions=[
+            ComposableNode(
+                name='rectify_node',
+                package='isaac_ros_image_proc',
+                plugin='nvidia::isaac_ros::image_proc::RectifyNode',
+                parameters=[{
+                    'output_width': 1920,
+                    'output_height': 1080,
+                }],
+                remappings=[
+                    ('image_raw', '/camera/color/image_raw'),
+                    ('camera_info', '/camera/color/camera_info'),
+                    ('image_rect', '/camera/color/image_rect'),
+                    ('camera_info_rect', '/camera/color/camera_info_rect'),
+                ]
+            ),
+            ComposableNode(
+                name='resize_node',
+                package='isaac_ros_image_proc',
+                plugin='nvidia::isaac_ros::image_proc::ResizeNode',
+                parameters=[{
+                    'output_width': network_image_width,
+                    'output_height': network_image_height,
+                    'keep_aspect_ratio': False,
+                    'encoding_desired': 'rgb8',
+                }],
+                remappings=[
+                    ('image', '/camera/color/image_rect'),
+                    ('camera_info', '/camera/color/camera_info_rect'),
+                    ('resize/image', '/resize/image'),
+                    ('resize/camera_info', '/resize/camera_info'),
+                ]
+            ),
+        ],
+        output='screen',
+    )
+
+    return LaunchDescription([
+        network_image_width_arg,
+        network_image_height_arg,
+        realsense_launch,
+        image_proc_container,
+    ])
+
+
+================================================================================
+FILE 11: cleaningrobot_bringup/launch/tensor_rt_only.launch.py
+================================================================================
+Description: TEST 3: TensorRT inference only
+Path: ../../../cleaningrobot_bringup/launch/tensor_rt_only.launch.py
+--------------------------------------------------------------------------------
+
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+# Copyright (c) 2025 CleaningRobot Project. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+INCREMENTAL TEST 3: TensorRT Inference Only
+Tests the full DNN encoder → TensorRT → YOLOv8 decoder pipeline.
+
+Requires: Pre-processed 640x640 RGB8 image on /resize/image
+Output: /detections (Detection2DArray)
+"""
+
+import os
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
+
+
+def generate_launch_description():
+    """Launch TensorRT inference pipeline with YOLOv8 decoder."""
+
+    # Model paths - match your actual deployment
+    model_file_path = os.path.join(
+        os.environ.get('ISAAC_ROS_WS', '/workspaces/isaac_ros-dev'),
+        'isaac_ros_assets/models/yolov8/socks2.onnx'
+    )
+    engine_file_path = os.path.join(
+        os.environ.get('ISAAC_ROS_WS', '/workspaces/isaac_ros-dev'),
+        'isaac_ros_assets/models/yolov8/socks2.plan'
+    )
+
+    # Launch arguments
+    confidence_threshold_arg = DeclareLaunchArgument(
+        'confidence_threshold',
+        default_value='0.83',
+        description='Confidence threshold for detections'
+    )
+    nms_threshold_arg = DeclareLaunchArgument(
+        'nms_threshold',
+        default_value='0.45',
+        description='NMS IOU threshold'
+    )
+
+    confidence_threshold = LaunchConfiguration('confidence_threshold')
+    nms_threshold = LaunchConfiguration('nms_threshold')
+
+    # DNN encoder + TensorRT + YOLOv8 decoder in one container
+    tensor_rt_container = ComposableNodeContainer(
+        name='tensor_rt_container',
+        namespace='',
+        package='rclcpp_components',
+        executable='component_container_mt',
+        composable_node_descriptions=[
+            # Image format converter (RGB8 → RGB)
+            ComposableNode(
+                name='image_format_node',
+                package='isaac_ros_image_proc',
+                plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
+                parameters=[{
+                    'encoding_desired': 'rgb8',
+                    'image_width': 640,
+                    'image_height': 640,
+                }],
+                remappings=[
+                    ('image_raw', '/resize/image'),
+                    ('image', '/image_rgb'),
+                ]
+            ),
+            # Image to tensor
+            ComposableNode(
+                name='image_to_tensor_node',
+                package='isaac_ros_tensor_proc',
+                plugin='nvidia::isaac_ros::dnn_inference::ImageToTensorNode',
+                parameters=[{
+                    'scale': False,
+                    'tensor_name': 'image',
+                }],
+                remappings=[
+                    ('image', '/image_rgb'),
+                    ('tensor', '/tensor_image'),
+                ]
+            ),
+            # Normalize tensor
+            ComposableNode(
+                name='normalize_node',
+                package='isaac_ros_tensor_proc',
+                plugin='nvidia::isaac_ros::dnn_inference::ImageTensorNormalizeNode',
+                parameters=[{
+                    'mean': [0.0, 0.0, 0.0],
+                    'stddev': [255.0, 255.0, 255.0],
+                }],
+                remappings=[
+                    ('tensor', '/tensor_image'),
+                    ('normalized_tensor', '/tensor_normalized'),
+                ]
+            ),
+            # Interleaved to planar
+            ComposableNode(
+                name='interleaved_to_planar_node',
+                package='isaac_ros_tensor_proc',
+                plugin='nvidia::isaac_ros::dnn_inference::InterleavedToPlanarNode',
+                remappings=[
+                    ('interleaved_tensor', '/tensor_normalized'),
+                    ('planar_tensor', '/tensor_planar'),
+                ]
+            ),
+            # Reshape tensor
+            ComposableNode(
+                name='reshape_node',
+                package='isaac_ros_tensor_proc',
+                plugin='nvidia::isaac_ros::dnn_inference::ReshapeNode',
+                parameters=[{
+                    'output_tensor_name': 'input_tensor',
+                    'input_tensor_shape': [640, 640, 3],
+                    'output_tensor_shape': [1, 3, 640, 640],
+                }],
+                remappings=[
+                    ('tensor', '/tensor_planar'),
+                    ('reshaped_tensor', '/tensor_pub'),
+                ]
+            ),
+            # TensorRT inference
+            ComposableNode(
+                name='tensor_rt',
+                package='isaac_ros_tensor_rt',
+                plugin='nvidia::isaac_ros::dnn_inference::TensorRTNode',
+                parameters=[{
+                    'model_file_path': model_file_path,
+                    'engine_file_path': engine_file_path,
+                    'input_tensor_names': ['input_tensor'],
+                    'input_binding_names': ['images'],
+                    'output_tensor_names': ['output_tensor'],
+                    'output_binding_names': ['output0'],
+                    'verbose': False,
+                    'force_engine_update': False,
+                }],
+                remappings=[
+                    ('tensor_pub', '/tensor_pub'),
+                    ('tensor_sub', '/tensor_sub'),
+                ]
+            ),
+            # YOLOv8 decoder
+            ComposableNode(
+                name='yolov8_decoder_node',
+                package='isaac_ros_yolov8',
+                plugin='nvidia::isaac_ros::yolov8::YoloV8DecoderNode',
+                parameters=[{
+                    'confidence_threshold': confidence_threshold,
+                    'nms_threshold': nms_threshold,
+                }],
+                remappings=[
+                    ('tensor_sub', '/tensor_sub'),
+                    ('detections_output', '/detections'),
+                ]
+            ),
+        ],
+        output='screen',
+    )
+
+    return LaunchDescription([
+        confidence_threshold_arg,
+        nms_threshold_arg,
+        tensor_rt_container,
+    ])
+
+

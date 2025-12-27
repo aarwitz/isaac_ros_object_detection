@@ -1,0 +1,15 @@
+# Python Dependencies - Production Locked Versions
+# NO floating versions - everything pinned exactly
+# Generated: 2025-12-20
+# Python 3.10 (ROS Humble base)
+
+# Core dependencies (EXACT versions)
+numpy==1.24.4
+opencv-python==4.8.1.78
+websockets==12.0
+
+# ROS Python packages (installed via apt in Dockerfile, listed for documentation)
+# rclpy - from ros-humble-rclpy
+# cv-bridge - from ros-humble-cv-bridge
+# sensor-msgs - from ros-humble-sensor-msgs
+# vision-msgs - from ros-humble-vision-msgs
